@@ -110,7 +110,7 @@ namespace VRComposer.Voice
                 Talking = true;
                 lastActivity = Time.unscaledTime;
                 micAcc.Clear();
-                talkPeak = 0f; talkSeconds = 0f; awaitingHeard = false;
+                talkPeak = 0f; talkSeconds = 0f; awaitingHeard = false; agcPeak = 0.02f;
                 foreach (var p in preroll) { micAcc.AddRange(p); Measure(p); }      // the first syllable said while pressing
                 preroll.Clear(); prerollSamples = 0;
                 mic.Chunk += OnMic;
@@ -128,7 +128,7 @@ namespace VRComposer.Voice
                 releasedAt = Time.unscaledTime;
                 awaitingHeard = true;
                 Debug.Log("[VRComposer] Push-to-talk released: " + talkSeconds.ToString("0.0") + " s from " + MicRecorder.ShortName(mic.CurrentDevice) + ", peak " + Db(talkPeak) + (Connected ? "" : " (still connecting)"));
-                if (talkPeak < 0.003f)   // about -50 dB: the mic gave (almost) nothing
+                if (talkPeak < 0.001f)   // about -60 dB: the mic gave (almost) nothing, even boosting will not help
                     SetStatus("Your mic sent " + Db(talkPeak) + ": tap the Mic button to switch, then hold Y again");
                 else SetStatus("Thinking...");
             }
@@ -150,11 +150,22 @@ namespace VRComposer.Voice
             if (micAcc.Count >= MicRecorder.Rate / 10) FlushMic();   // 100 ms packets
         }
 
+        // Automatic gain: quiet mics (laptop arrays, about -30 dB peaks) are not heard at all by the
+        // agent's speech detection, so speech is brought up to about -6 dB before it is sent.
+        private float agcPeak = 0.02f;
+        private const float AgcTarget = 0.5f, AgcMaxGain = 40f;
+
         private void FlushMic()
         {
             if (micAcc.Count == 0) return;
-            SendAudio(micAcc.ToArray());
+            var s = micAcc.ToArray();
             micAcc.Clear();
+            float pk = 0f;
+            foreach (var x in s) { float a = Math.Abs(x); if (a > pk) pk = a; }
+            agcPeak = Mathf.Max(pk, agcPeak * 0.97f, 0.004f);      // fast up, slow down (about 3 s)
+            float gain = Mathf.Clamp(AgcTarget / agcPeak, 1f, AgcMaxGain);
+            if (gain > 1.01f) for (int i = 0; i < s.Length; i++) s[i] = Mathf.Clamp(s[i] * gain, -1f, 1f);
+            SendAudio(s);
         }
 
         private void SendAudio(float[] s)
