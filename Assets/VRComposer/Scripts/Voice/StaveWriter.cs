@@ -52,7 +52,7 @@ namespace VRComposer.Voice
 
         /// <summary>A stave note for a sounding pitch: key-signature spelling in Advanced, the
         /// pentatonic scale in Beginner. Out-of-range notes are folded by octaves into the stave.</summary>
-        public static Note MakeNote(Score score, Clef clef, int midi, int tick, int len, bool tie)
+        public static Note MakeNote(Score score, Clef clef, int midi, int tick, int len, bool tie, bool snapToScale = true)
         {
             Duration d; bool dotted;
             LengthToDuration(len, out d, out dotted);
@@ -62,7 +62,7 @@ namespace VRComposer.Voice
             int step = Score.StepFromMidi(clef, midi, score.keySignature, out acc, out nat);
             while (step > Score.MaxStep) { midi -= 12; step = Score.StepFromMidi(clef, midi, score.keySignature, out acc, out nat); }
             while (step < Score.MinStep) { midi += 12; step = Score.StepFromMidi(clef, midi, score.keySignature, out acc, out nat); }
-            if (score.IsBeginner)
+            if (score.IsBeginner && snapToScale)
             {
                 step = BeginnerKit.SnapToScale(score.Key, clef, step);
                 acc = 0; nat = false;
@@ -75,14 +75,14 @@ namespace VRComposer.Voice
         /// Writes quantised notes onto a staff from 'startTick' as ONE undo step, growing the piece
         /// (up to MaxBars) if needed. Returns how many sounding notes were placed.
         /// </summary>
-        public static int Write(Score score, Staff staff, List<TickNote> notes, int startTick, bool replaceRange)
+        public static int Write(Score score, Staff staff, List<TickNote> notes, int startTick, bool replaceRange, bool saveUndo = true, bool snapToScale = true)
         {
             int tpb = score.TicksPerBar;
             int last = startTick;
             foreach (var t in notes) last = Mathf.Max(last, startTick + t.tick + t.length);
             int maxTicks = Score.MaxBars * tpb;
 
-            score.SaveUndo();
+            if (saveUndo) score.SaveUndo();
             int neededBars = Mathf.Min(Score.MaxBars, Mathf.CeilToInt(last / (float)tpb));
             if (neededBars > score.bars) score.bars = neededBars;
             if (replaceRange) staff.notes.RemoveAll(n => n.tick >= startTick && n.tick < last);
@@ -96,7 +96,7 @@ namespace VRComposer.Voice
                 if (tick + t.length > maxTicks) break;
                 // a tie is only kept if the next piece really continues the same pitch
                 bool tie = t.tieToNext && i + 1 < notes.Count && notes[i + 1].midi == t.midi && notes[i + 1].tick == t.tick + t.length;
-                list.Add(MakeNote(score, staff.clef, t.midi, tick, t.length, tie));
+                list.Add(MakeNote(score, staff.clef, t.midi, tick, t.length, tie, snapToScale));
                 if (t.midi >= 0 && !(i > 0 && notes[i - 1].tieToNext && notes[i - 1].midi == t.midi)) placed++;
             }
             score.PlaceMany(staff, list, false);

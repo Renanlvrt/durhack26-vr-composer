@@ -1,6 +1,6 @@
 using System;
 using UnityEngine;
-#if UNITY_ANDROID
+#if UNITY_ANDROID && !UNITY_EDITOR
 using UnityEngine.Android;
 #endif
 
@@ -15,8 +15,14 @@ namespace VRComposer.Voice
     {
         public const int Rate = 16000;
 
-        [Tooltip("Empty = system default. On Quest Link pick the headset ('Headset Microphone (Oculus Virtual Audio Device)').")]
+        [Tooltip("Empty = automatic: the headset mic (Oculus / Quest) if there is one, else the system default. A mic that gives pure silence is skipped by itself.")]
         public string deviceName = "";
+
+        /// <summary>The mic in use (null = system default).</summary>
+        public string CurrentDevice { get { return device; } }
+        public event Action<string> DeviceChanged;
+        private float silentSeconds;
+        private int autoSwitches;
 
         /// <summary>(16 kHz mono samples, absolute index of the first one).</summary>
         public event Action<float[], long> Chunk;
@@ -36,7 +42,7 @@ namespace VRComposer.Voice
         public bool Begin()
         {
             if (clip != null) return true;
-#if UNITY_ANDROID
+#if UNITY_ANDROID && !UNITY_EDITOR
             if (!Permission.HasUserAuthorizedPermission(Permission.Microphone))
             {
                 Permission.RequestUserPermission(Permission.Microphone);
@@ -45,7 +51,7 @@ namespace VRComposer.Voice
 #endif
             if (Microphone.devices.Length == 0) { Debug.LogWarning("[VRComposer] No microphone found."); return false; }
             Debug.Log("[VRComposer] Microphones: " + string.Join(" | ", Microphone.devices));
-            device = string.IsNullOrEmpty(deviceName) ? null : deviceName;
+            device = string.IsNullOrEmpty(deviceName) ? PreferredDevice() : deviceName;
             if (device != null && Array.IndexOf(Microphone.devices, device) < 0)
             {
                 // partial match ("Headset" / "Oculus")
@@ -61,8 +67,40 @@ namespace VRComposer.Voice
             devRate = clip.frequency;
             readPos = 0;
             resamplePos = 0;
+            silentSeconds = 0;
+            DeviceChanged?.Invoke(device);
             Debug.Log("[VRComposer] Mic on: " + (device ?? "default") + " at " + devRate + " Hz");
             return true;
+        }
+
+        /// <summary>The headset's mic when it is connected (Quest Link / Air Link), else the default.</summary>
+        private static string PreferredDevice()
+        {
+            foreach (var key in new[] { "Oculus", "Quest", "Headset" })
+                foreach (var d in Microphone.devices)
+                    if (d.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0) return d;
+            return null;
+        }
+
+        /// <summary>Switches to the next microphone in the list (wraps around).</summary>
+        public void NextDevice()
+        {
+            var all = Microphone.devices;
+            if (all.Length == 0) return;
+            int i = device == null ? -1 : Array.IndexOf(all, device);
+            if (i < 0 && device == null) i = Array.IndexOf(all, PreferredDevice() ?? "");
+            End();
+            deviceName = all[(i + 1 + all.Length) % all.Length];
+            Begin();
+        }
+
+        public static string ShortName(string d)
+        {
+            if (string.IsNullOrEmpty(d)) return "default";
+            if (d.IndexOf("Oculus", StringComparison.OrdinalIgnoreCase) >= 0 || d.IndexOf("Quest", StringComparison.OrdinalIgnoreCase) >= 0) return "Headset";
+            int p = d.IndexOf('(');
+            string s = (p > 0 ? d.Substring(0, p) : d).Trim();
+            return s.Length > 16 ? s.Substring(0, 16) : s;
         }
 
         public void End()
@@ -101,6 +139,17 @@ namespace VRComposer.Voice
             double e = 0;
             foreach (var s in outBuf) e += s * s;
             LevelDb = (float)(10 * Math.Log10(e / outBuf.Length + 1e-12));
+
+            // a muted / wrong device delivers pure digital silence (about -97 dB); a real room is
+            // never below about -75 dB. After 2 s of that, try the next microphone (each one once).
+            if (LevelDb < -88f) silentSeconds += outBuf.Length / (float)Rate; else { silentSeconds = 0; autoSwitches = 0; }
+            if (silentSeconds > 2f && Microphone.devices.Length > 1 && autoSwitches < Microphone.devices.Length - 1)
+            {
+                autoSwitches++;
+                Debug.LogWarning("[VRComposer] Mic '" + (device ?? "default") + "' gives only silence: trying the next one.");
+                NextDevice();
+                return;
+            }
             long start = TotalSamples;
             TotalSamples += outBuf.Length;
             Chunk?.Invoke(outBuf, start);

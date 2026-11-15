@@ -69,9 +69,8 @@ namespace VRComposer.Voice
             var score = app.Score;
             var staff = FindStaff(score, Str(a, "staff"), app.SelectedStaff);
             if (staff == null) return Err("No staff called '" + Str(a, "staff") + "'. Staves: " + StaffList(score));
-            int tpb = score.TicksPerBar;
-            int startBar = Int(a, "start_bar", ScoreText.LastBar(score, staff) + 2) - 1;   // 1-based in, default = next bar
-            if (startBar < 0) startBar = 0;
+            int requested = Int(a, "start_bar", 0);                                         // 1-based; 0 / missing = next bar
+            int startBar = requested > 0 ? requested - 1 : ScoreText.LastBar(score, staff) + 1;
             return Place(app, staff, Str(a, "bars"), Str(a, "chords"), startBar, false, null);
         }
 
@@ -92,7 +91,7 @@ namespace VRComposer.Voice
                 foreach (var d in Instruments.All) names.Add(d.name);
                 return Err("Unknown instrument '" + inst + "'. Available: " + string.Join(", ", names));
             }
-            int startBar = Math.Max(0, Int(a, "start_bar", 1) - 1);
+            int startBar = Math.Max(0, Int(a, "start_bar", 1) - 1);   // 0 / missing = bar 1
 
             // validate first, so a bad part never adds an empty staff
             int barCount;

@@ -75,6 +75,49 @@ the wrist menu, and your score is kept.
   any time (it replaces the score). Turn the automatic load off with VR Composer object >
   Load Demo On Advanced.
 
+## Voice: sing notes, and an ElevenLabs composer
+
+A **Voice** strip sits under the transport: `[Sing] [16ths/8ths] [Mic: Headset] [Talk (hold Y)]`.
+
+**Sing (or V)**
+1. Press Sing, then start singing "la la laaa" whenever you like.
+2. Your first note is beat 1 of the next bar after the last note of the selected staff. The
+   controller pulses keep the beat from there.
+3. **Every 4 beats** the notes sung so far are written onto the staff.
+4. **4 beats of silence** end the take (or press Sing again).
+
+The whole take is one **Undo**.
+- It runs on the device: YIN pitch tracking, then the take is cut into notes at each "l" of "la"
+  (loudness dips) and at held pitch changes.
+- Each note's pitch is the median of its steady middle. Your overall sharpness or flatness is
+  removed, then everything is quantised to the tempo from your first note. Timing from the first
+  note also cancels any mic delay.
+- Sung notes keep the exact pitch you sang (sharps and flats included), in both modes. Low voices are moved by whole octaves into the staff's range (same note names). Only the AI composer's notes snap to the
+  pentatonic scale. Use **8ths** for a more forgiving rhythm grid.
+- **Mic**: the headset mic (Quest Link / Air Link) is chosen automatically. A mic that gives pure
+  silence (muted or wrong device) is skipped by itself. Tap **Mic** to cycle through the
+  microphones; your choice is remembered.
+- Every take is saved to `persistentDataPath/takes/` as WAV + JSON. **Tools > VR Composer >
+  Transcribe WAV Take...** re-runs a saved take and prints the notes.
+
+**Talk to the composer (hold Y on the left controller, or T)**
+- Say "suggest the next part", "add a guitar part to the melody", "let me sing", "play", "undo
+  that" or "faster", then let go of Y.
+- An ElevenLabs agent with **Claude Sonnet 5.5** (low reasoning) reads the score through tools
+  and writes notes and chords back through tools. It never speaks notes; it says one short line.
+- Every bar it writes is checked (exact bar length, valid pitches and chords, range). If a bar is
+  wrong, it gets the exact error and corrects itself. Each write is one Undo step.
+- Tapping Y still deselects, as before.
+
+**Setup (once)**
+1. Put the key in `Durhack 26/.env` (git-ignored, also in `ignore.conf`; copy `.env.example`):
+   `ELEVENLABS_API_KEY=sk_...`
+2. **Tools > VR Composer > Create or Update ElevenLabs Agent**. This creates the agent from
+   `Editor/ElevenLabsAgent.json` (prompt, model, tools) and writes `ELEVENLABS_AGENT_ID` into
+   `.env`. Edit the JSON (for example `"llm": "claude-haiku-5-5"`) and run it again to change it.
+
+A key inside a build can be extracted: fine for a demo, not for a release.
+
 ## Accurate placement
 
 - Large stave (22 px spaces), 4 bars per page in Beginner and 2 in Advanced (◀ ▶ to change page).
@@ -175,6 +218,17 @@ Composer object to bring them back.
 - `Scripts/DragDrop.cs`: drag sources, the 1€ filter and sticky snapping.
 - `Scripts/VRComposerApp.cs`: welcome, palette, inspector, transport, wrist menu, nudge.
 - `Scripts/UIFactory.cs`: palette colours and widget builders.
+- `Scripts/Voice/`:
+  - `PitchTracking.cs`: YIN, note segmenter, rhythm quantiser. Plain C#.
+  - `MicRecorder.cs`: the one mic owner, 16 kHz.
+  - `VoiceComposer.cs`: the strip, count-in, takes.
+  - `StaveWriter.cs`: MIDI to stave notes, one undo step.
+  - `ScoreText.cs`: score as text, and the validator.
+  - `AgentTools.cs`: the agent's tools.
+  - `ElevenAgent.cs`: the WebSocket client.
+  - `ElevenLabsConfig.cs`: reads `.env`.
+- `Editor/ElevenLabsAgent.json` + `ElevenLabsAgentSetup.cs`: the agent definition and its setup
+  menu.
 - `Scripts/Themes/`: venues, musicians, venue audio (ported from durhack.4) and `ThemeManager`.
 - `Resources/GeneralUser-GS.bytes`: GeneralUser GS (.sf2 renamed). See its licence file.
 - `Resources/VRComposerGlyphs/*.png`: Leland glyphs (SIL OFL, see `Leland-LICENSE-OFL.txt`).

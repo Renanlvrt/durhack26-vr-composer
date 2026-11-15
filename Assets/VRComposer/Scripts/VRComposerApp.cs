@@ -48,7 +48,7 @@ namespace VRComposer
         public bool applause = false;
 
         [Header("Wrist menu")]
-        public bool createWristMenu = true;
+        [HideInInspector] public bool createWristMenu = false;   // unused: the wrist menu was removed
         [Tooltip("Optional. If empty, a GameObject named like 'Left Controller' / 'Left Hand' is searched.")]
         public Transform wristAnchor;
         public Vector3 wristLocalPosition = new Vector3(0f, 0.07f, -0.02f);
@@ -158,7 +158,9 @@ namespace VRComposer
                     if (go != null) go.SetActive(false);
                 }
             Recenter();
-            if (createWristMenu) BuildWristMenu();
+            // The wrist menu is gone: Play / Hide-Show / Recenter are on the transport bar, mode and
+            // place on the inspector. The left hand has its ray and the note wheel (X) instead.
+            // (BuildWristMenu is kept in case it is wanted back.)
             // No welcome screen: go straight into the default venue (there is no empty Studio any more).
             if (!showWelcome && Themes.Current != welcomeTheme) Themes.Set(welcomeTheme);
             // No welcome screen: open straight on the Beethoven 5 demo (if nothing is written yet)

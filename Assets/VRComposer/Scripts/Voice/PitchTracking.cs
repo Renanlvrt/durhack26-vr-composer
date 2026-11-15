@@ -47,10 +47,6 @@ namespace VRComposer.Voice
                 for (int j = 0; j < w; j++) energy += x[s + j] * x[s + j];
                 double rms = Math.Sqrt(energy / w);
                 var fr = new PitchFrame { time = (s + w * 0.5) / sr, rmsDb = 20 * Math.Log10(rms + 1e-9) };
-                int sw = Math.Max(1, sr / 100), sc = s + w / 2 - sw / 2;
-                double se = 0;
-                for (int j = 0; j < sw; j++) se += x[sc + j] * x[sc + j];
-                fr.onsetDb = 20 * Math.Log10(Math.Sqrt(se / sw) + 1e-9);
 
                 // difference function
                 for (int tau = 1; tau <= tauMax + 1; tau++)
@@ -94,6 +90,16 @@ namespace VRComposer.Voice
                 }
                 fr.conf = Math.Max(0, Math.Min(1, 1 - ap));
                 fr.f0 = ap < 0.35 && t > 0 ? sr / t : 0;
+
+                // sharp loudness for consonant dips: at least 2.5 pitch periods (10 ms for high voices,
+                // up to 30 ms for basses) so single glottal pulses never look like dips
+                int sw = sr / 100;
+                if (fr.f0 > 0) sw = Math.Max(sw, Math.Min((int)(0.03 * sr), (int)(2.5 * sr / fr.f0)));
+                sw = Math.Min(sw, w);
+                int sc = s + w / 2 - sw / 2;
+                double se = 0;
+                for (int j = 0; j < sw; j++) se += x[sc + j] * x[sc + j];
+                fr.onsetDb = 20 * Math.Log10(Math.Sqrt(se / sw) + 1e-9);
                 frames[f] = fr;
             }
             return frames;
@@ -198,6 +204,23 @@ namespace VRComposer.Voice
             double offset = notes.Count > 0 ? Math.Atan2(sy, sx) / (2 * Math.PI) : 0;
             tuningCents = offset * 100;
             foreach (var x in notes) x.midi = (int)Math.Round(x.pitch - offset);
+
+            // octave blips: a short note an octave away from the note it touches is a tracking error
+            // (common at the start of low notes): give its time to that neighbour
+            for (int i = 0; i < notes.Count && notes.Count > 1; i++)
+            {
+                var x = notes[i];
+                if (x.end - x.start > 0.16) continue;
+                SungNote nb = null;
+                if (i + 1 < notes.Count && notes[i + 1].start - x.end < 0.05 && Math.Abs(Math.Abs(notes[i + 1].midi - x.midi) - 12) <= 1) nb = notes[i + 1];
+                else if (i > 0 && x.start - notes[i - 1].end < 0.05 && Math.Abs(Math.Abs(notes[i - 1].midi - x.midi) - 12) <= 1) nb = notes[i - 1];
+                if (nb == null) continue;
+                nb.start = Math.Min(nb.start, x.start);
+                nb.end = Math.Max(nb.end, x.end);
+                if (nb.start == x.start) nb.afterDip = x.afterDip;
+                notes.RemoveAt(i);
+                i = -1;
+            }
 
             // neighbours that ended up on the same note without a consonant between them are one note
             for (int i = notes.Count - 1; i > 0; i--)

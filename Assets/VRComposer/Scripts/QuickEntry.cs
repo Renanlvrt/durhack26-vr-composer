@@ -646,8 +646,9 @@ namespace VRComposer
                 // keep the wrist turned far to keep stepping (so every slice is reachable)
                 else if (Mathf.Abs(total) > twistStepDegrees * 1.7f && Time.unscaledTime - lastStep > 0.45f) step = total > 0 ? sign : -sign;
             }
-            // Joystick of the same hand (left stick for X, right stick for A; arrows on the keyboard):
-            // each flick left/right moves one slice; hold it to keep stepping.
+            // In VR the wheel turns with the wrist twist only. Without a tracked controller (desktop
+            // testing) the arrow keys step instead: a press moves one slice, hold to keep stepping.
+            if (!tracked)
             {
                 Vector2 s = (w == noteWheel ? lStick : rStick).ReadValue<Vector2>();
                 int sd = s.x > 0.6f ? 1 : s.x < -0.6f ? -1 : 0;
@@ -676,8 +677,37 @@ namespace VRComposer
 
         // ======================================================== frame
 
+        private float nextRayCheck;
+        private bool leftRayReady;
+
+        /// <summary>The left controller gets a working UI ray like the right one (point and pull the
+        /// left trigger on the panels and the stave).</summary>
+        private void EnsureLeftRay()
+        {
+            if (leftRayReady || Time.unscaledTime < nextRayCheck) return;
+            nextRayCheck = Time.unscaledTime + 2f;
+            var left = VRComposerApp.FindLeftHand();
+            if (left == null) return;
+            int n = 0;
+            foreach (var nf in left.GetComponentsInChildren<UnityEngine.XR.Interaction.Toolkit.Interactors.NearFarInteractor>(true))
+            {
+                nf.enableUIInteraction = true;
+                nf.enableFarCasting = true;
+                if (!nf.enabled) nf.enabled = true;
+                n++;
+            }
+            foreach (var ray in left.GetComponentsInChildren<UnityEngine.XR.Interaction.Toolkit.Interactors.XRRayInteractor>(true))
+            {
+                if (ray.name.IndexOf("Teleport", System.StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                ray.enableUIInteraction = true;
+                n++;
+            }
+            if (n > 0) { leftRayReady = true; Debug.Log("[VRComposer] Left controller ray: UI on (" + n + " interactor(s))."); }
+        }
+
         private void Update()
         {
+            EnsureLeftRay();
             if (app == null || noteWheel == null) return;
             if (!DragSource.Dragging)
             {
