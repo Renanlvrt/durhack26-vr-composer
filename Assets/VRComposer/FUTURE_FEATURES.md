@@ -11,6 +11,19 @@ Not implemented yet. The current version is controller-first, using XRI rays.
 - **Hand models** instead of controller models.
 - Pinch-and-twist on a selected note as an alternative to the thumbstick nudge.
 
+## Voice (ElevenLabs)
+- **A singing voice as an instrument**, in Beginner and Advanced: add a "Voice" stave from the
+  instrument picker, type or say lyrics, and generate a sung (or spoken) line that follows the
+  notes of that stave with ElevenLabs (text-to-speech / voice models), then play it in time with
+  the band. Not built yet: today "Choir" is the only voice-like instrument (a SoundFont "aah").
+- Pick a voice (soprano, tenor, rapper, narrator...) and a language.
+- Cache the generated audio per stave, so playback stays deterministic and works offline once made.
+
+## Venues
+- Audience members, applause and background crowd sound are switched off for frame rate and
+  because they were too loud (VR Composer object > Show Audience / Venue Ambience / Applause).
+  Bring them back with real recorded applause and lighter, merged audience meshes.
+
 ## Composition
 - Save and load scores (JSON in `Application.persistentDataPath`) and MIDI file export.
 - Ties, beams for eighths/16ths, triplets, key signatures with sharps/flats in Advanced.

@@ -3,6 +3,9 @@ using UnityEngine;
 
 namespace VRComposer
 {
+    /// <summary>Beginner placement feedback colour.</summary>
+    public enum Fit { None, Good, Ok, Bad }
+
     /// <summary>One-bar melodic idea: a rhythm plus pentatonic steps relative to the first note.</summary>
     public class Motif
     {
@@ -341,6 +344,119 @@ namespace VRComposer
             ordered.Sort((a, b) => scores[b].CompareTo(scores[a]));
             for (int i = 0; i < count && i < ordered.Count; i++) list.Add(ordered[i]);
             return list;
+        }
+            // ---------------------------------------------------------------- placement feedback (green / yellow / red)
+
+        /// <summary>
+        /// How well a placement fits, judged by simple rules a teacher would use:
+        /// red = a semitone clash with the chord underneath, a jump of more than an octave, or a spot
+        /// where it cannot go; green = a chord tone (or a small step when there is no chord) that
+        /// replaces nothing; yellow = everything in between. It only advises: you can drop anywhere.
+        /// </summary>
+        public static Fit RateNotes(Score s, Staff staff, List<Note> notes, Note ignore, bool placeable, out string reason)
+        {
+            reason = null;
+            if (!placeable) { reason = "does not fit in this bar"; return Fit.Bad; }
+            int bad = 0, ok = 0, sounding = 0;
+            bool firstBad = false;
+            int prevMidi = int.MinValue;
+            if (notes.Count > 0)
+            {
+                int start = notes[0].tick, best = -1;
+                foreach (var o in staff.notes)
+                {
+                    if (o == ignore || o.isRest || o.tick >= start) continue;
+                    if (o.tick > best) { best = o.tick; prevMidi = s.MidiOf(staff.clef, o.step, o.accidental, o.natural); }
+                }
+            }
+            bool replaces = false;
+            foreach (var n in notes)
+                foreach (var o in staff.notes)
+                    if (o != ignore && o.tick < n.End && n.tick < o.End && !(o.tick == n.tick && o.Length16 == n.Length16 && !o.isRest && !n.isRest && o.step != n.step)) replaces = true;
+
+            for (int i = 0; i < notes.Count; i++)
+            {
+                var n = notes[i];
+                if (n.isRest) continue;
+                sounding++;
+                int midi = s.MidiOf(staff.clef, n.step, n.accidental, n.natural);
+                Fit f = Fit.Good;
+                var chord = s.ChordAt(n.tick);
+                if (chord != null)
+                {
+                    int bass;
+                    var tones = ChordMidi(s.Key, chord.degree, out bass);
+                    bool chordTone = false, clash = false;
+                    foreach (var t in tones)
+                    {
+                        int d = Score.Mod(midi - t, 12);
+                        if (d == 0) chordTone = true;
+                        if (d == 1 || d == 11) clash = true;
+                    }
+                    if (clash) { f = Fit.Bad; if (reason == null) reason = "clashes with the " + ChordName(s.Key, chord.degree) + " chord"; }
+                    else if (!chordTone) { f = Fit.Ok; if (reason == null) reason = "not in the " + ChordName(s.Key, chord.degree) + " chord"; }
+                }
+                if (prevMidi != int.MinValue && f != Fit.Bad)
+                {
+                    int leap = Mathf.Abs(midi - prevMidi);
+                    if (leap > 12) { f = Fit.Bad; if (reason == null) reason = "jump of more than an octave"; }
+                    else if (leap > 7 && f == Fit.Good) { f = Fit.Ok; if (reason == null) reason = "big jump"; }
+                }
+                prevMidi = midi;
+                if (f == Fit.Bad) { bad++; if (sounding == 1) firstBad = true; }
+                else if (f == Fit.Ok) ok++;
+            }
+            Fit result;
+            if (firstBad || bad >= 2 || (bad == 1 && sounding <= 2)) result = Fit.Bad;
+            else if (bad == 1 || ok > sounding / 2) result = Fit.Ok;
+            else result = Fit.Good;
+            if (replaces && result == Fit.Good) { result = Fit.Ok; reason = "replaces a note"; }
+            if (result == Fit.Good) reason = chordFitText(s, notes);
+            return result;
+        }
+
+        private static string chordFitText(Score s, List<Note> notes)
+        {
+            foreach (var n in notes) if (!n.isRest && s.ChordAt(n.tick) != null) return "fits the chord";
+            return "smooth melody";
+        }
+
+        /// <summary>A chord block against the melody it would sit under.</summary>
+        public static Fit RateChord(Score s, int degree, int tick, int length, out string reason)
+        {
+            reason = "fits your melody";
+            if (s.staves.Count == 0) return Fit.Good;
+            int bass;
+            var tones = ChordMidi(s.Key, degree, out bass);
+            int clashes = 0, notes = 0;
+            foreach (var staff in s.staves)   // every instrument, not just the first
+                foreach (var n in staff.notes)
+                {
+                    if (n.isRest || n.tick >= tick + length || n.End <= tick) continue;
+                    notes++;
+                    int midi = s.MidiOf(staff.clef, n.step, n.accidental, n.natural);
+                    foreach (var t in tones) { int d = Score.Mod(midi - t, 12); if (d == 1 || d == 11) { clashes++; break; } }
+                }
+            if (clashes >= 2 || (clashes == 1 && notes <= 2)) { reason = "clashes with " + clashes + " melody note" + (clashes > 1 ? "s" : ""); return Fit.Bad; }
+            if (clashes == 1) { reason = "one note rubs against it"; return Fit.Ok; }
+            if (notes == 0) { reason = "no melody here yet"; return Fit.Ok; }
+            return Fit.Good;
+        }
+
+        public static Color FitColour(Fit f)
+        {
+            switch (f)
+            {
+                case Fit.Good: return new Color(0.20f, 0.72f, 0.33f, 1f);
+                case Fit.Ok: return new Color(0.96f, 0.76f, 0.10f, 1f);
+                case Fit.Bad: return new Color(0.88f, 0.22f, 0.22f, 1f);
+                default: return new Color(0.95f, 0.42f, 0.12f, 1f);
+            }
+        }
+
+        public static string FitLabel(Fit f)
+        {
+            return f == Fit.Good ? "Great spot" : f == Fit.Ok ? "OK" : f == Fit.Bad ? "Sounds off" : "";
         }
     }
 }

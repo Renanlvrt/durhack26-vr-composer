@@ -18,6 +18,13 @@ namespace VRComposer
     /// Static architecture is combined with StaticBatchingUtility to keep draw calls low on Quest 2.
     public static class Venues
     {
+        /// <summary>
+        /// The audience (and the café guests in the jazz club) is switched off for now to save frame
+        /// time on Quest Link. The code is kept: set this to true (VR Composer > Show Audience) to
+        /// bring them back.
+        /// </summary>
+        public static bool ShowAudience = false;
+
         public static readonly VenueId[] All = { VenueId.GoldenHall, VenueId.RecitalRoom, VenueId.JazzClub, VenueId.Cathedral };
 
         public static (string title, string subtitle, string inspired, int inst) Describe(VenueId v) => v switch
@@ -110,7 +117,7 @@ namespace VRComposer
                 }
             for (int i = 0; i < 2; i++) info.players.Add(Musician.Create(d, "Double bass " + (i + 1), Role.DoubleBass, Outfit.ConcertBlack(idx++), new Vector3(2.6f + i * 0.9f, 0.3f, 5.2f), User, false, true));
             // first rows of the audience can applaud (behind you)
-            for (int i = 0; i < 10; i++) info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i), new Vector3((i - 4.5f) * 0.62f, 0.05f, -3.1f - (i % 2) * 1.0f), new Vector3((i - 4.5f) * 0.62f, 0, 5), true, false));
+            for (int i = 0; i < 10; i++) if (ShowAudience) info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i), new Vector3((i - 4.5f) * 0.62f, 0.05f, -3.1f - (i % 2) * 1.0f), new Vector3((i - 4.5f) * 0.62f, 0, 5), true, false));
         }
 
         // ------------------------------------------------------------------
@@ -136,7 +143,7 @@ namespace VRComposer
                 var pos = new Vector3(quartet[i].Item2, 0.6f, 3.6f + Mathf.Abs(quartet[i].Item2) * -0.25f);
                 info.players.Add(Musician.Create(d, i == 2 ? "Viola" : quartet[i].Item1.ToString(), quartet[i].Item1, Outfit.ConcertBlack(i + 5), pos, new Vector3(0, 0, 1.6f), true, true));
             }
-            for (int i = 0; i < 8; i++) { float x = (i < 4 ? -1 : 1) * (0.6f + (i % 4) * 0.6f); info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i + 3), new Vector3(x, 0.02f, -0.2f), new Vector3(x, 0, 5), true, false)); }
+            for (int i = 0; i < 8; i++) { float x = (i < 4 ? -1 : 1) * (0.6f + (i % 4) * 0.6f); if (ShowAudience) info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i + 3), new Vector3(x, 0.02f, -0.2f), new Vector3(x, 0, 5), true, false)); }
         }
 
         // ------------------------------------------------------------------
@@ -163,7 +170,7 @@ namespace VRComposer
                 for (int k = 0; k < 2; k++)
                 {
                     var off = new Vector3(k == 0 ? -0.45f : 0.45f, 0, 0);
-                    info.audience.Add(Musician.Create(d, "Guest", Role.Audience, Outfit.Casual(a++ + 7), tp + off, tp, true, false));
+                    if (ShowAudience) info.audience.Add(Musician.Create(d, "Guest", Role.Audience, Outfit.Casual(a++ + 7), tp + off, tp, true, false));
                 }
             }
             AddLight(d, LightType.Directional, Vector3.zero, new Vector3(60, 0, 0), new Color(0.6f, 0.35f, 0.3f), 0.25f);
@@ -211,7 +218,7 @@ namespace VRComposer
             var q = new (Role role, float x, bool sit)[] { (Role.Trumpet, -1.6f, false), (Role.Trumpet, -0.8f, false), (Role.Horn, 0f, true), (Role.Trombone, 0.8f, false), (Role.Tuba, 1.6f, true) };
             for (int i = 0; i < q.Length; i++)
                 info.players.Add(Musician.Create(d, q[i].role.ToString(), q[i].role, Outfit.ConcertBlack(i + 11), new Vector3(q[i].x, 0, 3.0f - Mathf.Abs(q[i].x) * 0.3f), User, q[i].sit, i == 0 || i == 1 || i == 3));
-            for (int i = 0; i < 8; i++) { float x = (i < 4 ? -1 : 1) * (0.7f + (i % 4) * 0.55f); info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i + 21), new Vector3(x, 0.02f, -1.9f), new Vector3(x, 0, 5), true, false)); }
+            for (int i = 0; i < 8; i++) { float x = (i < 4 ? -1 : 1) * (0.7f + (i % 4) * 0.55f); if (ShowAudience) info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i + 21), new Vector3(x, 0.02f, -1.9f), new Vector3(x, 0, 5), true, false)); }
         }
     }
 }

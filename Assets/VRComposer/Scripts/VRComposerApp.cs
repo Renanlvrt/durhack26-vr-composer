@@ -33,7 +33,19 @@ namespace VRComposer
         [Tooltip("Hide the VR template's tutorial props (Interactables, CoachingCardRoot).")]
         public bool hideTemplateProps = true;
         public bool showWelcome = true;
+        [Tooltip("Open the Beethoven 5 string quartet demo when the score is empty: on choosing Advanced on the welcome screen, or at start when the welcome screen is off.")]
+        public bool loadDemoOnAdvanced = true;
         public bool followPlayhead = true;
+
+        [Header("Venues (off = lighter for Quest Link; the code is kept, tick to bring back)")]
+        [Tooltip("Audience members in the venues (they nod along).")]
+        public bool showAudience = false;
+        [Tooltip("Background crowd / room sound in the venues.")]
+        public bool venueAmbience = false;
+        [Tooltip("Applause at the end of a full play-through.")]
+        public bool applause = false;
+        [Tooltip("In a venue, hide the score and side panels while the music plays so you watch the musicians. Only the transport (Stop) stays.")]
+        public bool hidePanelsWhilePlaying = true;
 
         [Header("Wrist menu")]
         public bool createWristMenu = true;
@@ -59,7 +71,14 @@ namespace VRComposer
             layoutVersion = CurrentLayoutVersion;
         }
 
-        private void OnValidate() { MigrateLayout(); }
+        private void OnValidate() { MigrateLayout(); ApplyVenueOptions(); }
+
+        private void ApplyVenueOptions()
+        {
+            Venues.ShowAudience = showAudience;
+            VenueAudio.EnableAmbience = venueAmbience;
+            VenueAudio.EnableApplause = applause;
+        }
 
         public Score Score { get; private set; }
         public ScorePlayer Player { get; private set; }
@@ -72,14 +91,15 @@ namespace VRComposer
         private Transform panelRoot;
         private Canvas scoreCanvas, paletteCanvas, inspectorCanvas, transportCanvas, wristCanvas, welcomeCanvas;
         private RectTransform paletteContent, inspectorContent, welcomeContent;
-        private Button playButton, loopButton, undoButton, wristPlay, wristMode, wristHide, wristTheme;
+        private Button playButton, loopButton, undoButton, hideButton, wristPlay, wristMode, wristHide, wristTheme;
         private TextMeshProUGUI positionText, paletteHint;
         private string paletteTab = "Notes";
         private bool panelsVisible = true, started;
+        private bool performing;   // music playing in a venue with the composition hidden
         private Vector3 layoutHead, layoutFwd;
         private float lastScoreHeight;
 
-        private InputAction nudgeAction, backAction, playAction;
+        private InputAction nudgeAction, backAction, playAction, recenterAction;
         private Vector2Int heldDir;
         private float nextRepeat;
         private readonly List<Behaviour> pausedLocomotion = new List<Behaviour>();
@@ -90,10 +110,11 @@ namespace VRComposer
         {
             Instance = this;
             MigrateLayout();
+            ApplyVenueOptions();
             EnsureEventSystem();
 
             Score = new Score();
-            Score.AddStaff(Instruments.All[0]); // Flute
+            Score.AddStaff(Instruments.Find("Flute"));
 
             Player = GetComponent<ScorePlayer>();
             Player.Bind(Score);
@@ -135,6 +156,10 @@ namespace VRComposer
                 }
             Recenter();
             if (createWristMenu) BuildWristMenu();
+            // No welcome screen: go straight into the default venue (there is no empty Studio any more).
+            if (!showWelcome && Themes.Current != welcomeTheme) Themes.Set(welcomeTheme);
+            // No welcome screen: open straight on the Beethoven 5 demo (if nothing is written yet)
+            if (!showWelcome && loadDemoOnAdvanced && Score.staves.TrueForAll(st => st.notes.Count == 0)) LoadDemo();
         }
 
         private void OnDestroy()
@@ -143,6 +168,7 @@ namespace VRComposer
             nudgeAction?.Dispose();
             backAction?.Dispose();
             playAction?.Dispose();
+            recenterAction?.Dispose();
             ResumeLocomotion();
             if (Instance == this) Instance = null;
         }
@@ -163,10 +189,12 @@ namespace VRComposer
         {
             started = on;
             welcomeCanvas.gameObject.SetActive(!on);
-            scoreCanvas.gameObject.SetActive(on && panelsVisible);
-            paletteCanvas.gameObject.SetActive(on && panelsVisible);
-            inspectorCanvas.gameObject.SetActive(on && panelsVisible);
-            transportCanvas.gameObject.SetActive(on && panelsVisible);
+            bool composing = on && panelsVisible && !performing;
+            scoreCanvas.gameObject.SetActive(composing);
+            paletteCanvas.gameObject.SetActive(composing);
+            inspectorCanvas.gameObject.SetActive(composing);
+            transportCanvas.gameObject.SetActive(on);   // always there: Play/Stop and Show
+            UIFactory.SetButton(hideButton, panelsVisible ? "Hide" : "Show", panelsVisible ? UIFactory.Dark : UIFactory.Orange);
         }
 
         // ================================================================== layout
@@ -180,6 +208,7 @@ namespace VRComposer
             if (fwd.sqrMagnitude < 1e-4f) fwd = Vector3.forward;
             layoutFwd = fwd.normalized;
             Layout();
+            if (Themes != null) Themes.Realign();
         }
 
         private void Layout()
@@ -222,6 +251,7 @@ namespace VRComposer
             ShowComposer(started);
             if (!started) welcomeCanvas.gameObject.SetActive(panelsVisible);
             UIFactory.SetButton(wristHide, panelsVisible ? "Hide" : "Show", UIFactory.Dark);
+            UIFactory.SetButton(hideButton, panelsVisible ? "Hide" : "Show", panelsVisible ? UIFactory.Dark : UIFactory.Orange);
         }
 
         // ================================================================== state changes
@@ -246,7 +276,7 @@ namespace VRComposer
         {
             string s;
             if (SelectedNote != null)
-                s = "Selected " + (SelectedNote.isRest ? "rest" : Score.StepToName(SelectedNoteStaff.clef, SelectedNote.step, SelectedNote.accidental)) + "  ·  thumbstick to nudge, B to finish";
+                s = "Selected " + (SelectedNote.isRest ? "rest" : Score.NameOf(SelectedNoteStaff.clef, SelectedNote.step, SelectedNote.accidental, SelectedNote.natural)) + "  ·  thumbstick to nudge, B to finish";
             else if (Score.staves.TrueForAll(st => st.notes.Count == 0))
                 s = Score.IsBeginner ? "Drag a motif or a note from the palette onto the stave" : "Drag a note from the palette onto the stave";
             else s = "Tap a note to select it  ·  press Play to hear your piece";
@@ -256,20 +286,36 @@ namespace VRComposer
         public void OnThemeChanged(VenueId id, int venueProgram)
         {
             // In Beginner mode the venue's band plays your melody (strings, sax, brass).
-            if (Score.IsBeginner && venueProgram >= 0 && Score.staves.Count > 0)
+            // Not once you have picked the first instrument yourself.
+            if (Score.IsBeginner && !melodyInstrumentChosen && venueProgram >= 0 && Score.staves.Count > 0)
             {
                 var s = Score.staves[0];
                 s.program = venueProgram;
-                s.name = Instruments.All[Instruments.IndexOfProgram(venueProgram)].program == venueProgram ? Instruments.All[Instruments.IndexOfProgram(venueProgram)].name : (venueProgram == 66 ? "Tenor Sax" : "Melody");
+                s.name = Instruments.Has(venueProgram) ? Instruments.All[Instruments.IndexOfProgram(venueProgram)].name : "Melody";
                 Score.NotifyChanged();
             }
             else Refresh();
             UIFactory.SetButton(wristTheme, ThemeManager.Title(id), UIFactory.Indigo);
         }
 
+        /// <summary>Replaces the score with the Beethoven 5 string quartet demo (Advanced mode).</summary>
+        public void LoadDemo()
+        {
+            paletteTab = "Notes";
+            pickerOpen = false;
+            View.pageStart = 0;
+            Deselect();
+            if (Player != null) Player.Stop();
+            melodyInstrumentChosen = true;          // venues must not swap Violin I for their own instrument
+            DemoScores.LoadBeethoven5(Score);
+            SelectStaff(0);
+            UIFactory.SetButton(wristMode, "Advanced", UIFactory.Indigo);
+        }
+
         public void SetMode(ComposeMode m)
         {
             paletteTab = "Notes";
+            pickerOpen = false;
             View.pageStart = 0;
             Deselect();
             Score.SetMode(m);
@@ -294,7 +340,7 @@ namespace VRComposer
             if (SelectedNote == n) { Deselect(); return; }
             SetSelection(s, n);
             if (s != null) SelectedStaff = Score.staves.IndexOf(s);
-            if (preview && n != null && !n.isRest) Player.PreviewNote(s.program, Score.StepToMidi(s.clef, n.step, n.accidental));
+            if (preview && n != null && !n.isRest) Player.PreviewNote(s.program, Score.MidiOf(s.clef, n.step, n.accidental, n.natural));
             View.ApplySelectionVisual();
             UpdateIdleReadout();
         }
@@ -334,6 +380,14 @@ namespace VRComposer
             playAction.AddBinding("<Keyboard>/space");
             playAction.performed += _ => { if (started) Player.TogglePlay(); };
             playAction.Enable();
+
+            // Click either thumbstick: bring the panels (and the venue) in front of you again.
+            recenterAction = new InputAction("VRComposer Recenter", InputActionType.Button);
+            recenterAction.AddBinding("<XRController>{RightHand}/{Primary2DAxisClick}");
+            recenterAction.AddBinding("<XRController>{LeftHand}/{Primary2DAxisClick}");
+            recenterAction.AddBinding("<Keyboard>/r");
+            recenterAction.performed += _ => Recenter();
+            recenterAction.Enable();
         }
 
         private void HandleNudge()
@@ -372,7 +426,7 @@ namespace VRComposer
                 if (!View.OnPage(n.tick)) View.ShowPageOf(n.tick);
                 View.ApplySelectionVisual();
                 UpdateIdleReadout();
-                if (!n.isRest) Player.PreviewNote(s.program, Score.StepToMidi(s.clef, n.step, n.accidental), 0.3f);
+                if (!n.isRest) Player.PreviewNote(s.program, Score.MidiOf(s.clef, n.step, n.accidental, n.natural), 0.3f);
             }
         }
 
@@ -403,6 +457,12 @@ namespace VRComposer
         {
             HandleNudge();
             bool playing = Player.IsPlaying;
+            bool perform = hidePanelsWhilePlaying && playing && started && Themes != null && Themes.Current != VenueId.Studio;
+            if (perform != performing)
+            {
+                performing = perform;
+                ShowComposer(started);   // the transport stays, so Stop is always there
+            }
             UIFactory.SetButton(playButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
             UIFactory.SetButton(View.PlayButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
             UIFactory.SetButton(wristPlay, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
@@ -432,7 +492,7 @@ namespace VRComposer
                 if (Score.Place(staff, n))
                 {
                     SelectNote(staff, n, false);
-                    if (!n.isRest) Player.PreviewNote(staff.program, Score.StepToMidi(staff.clef, n.step, n.accidental));
+                    if (!n.isRest) Player.PreviewNote(staff.program, Score.MidiOf(staff.clef, n.step, n.accidental, n.natural));
                 }
             }
             else if (notes.Count > 1)
@@ -462,7 +522,7 @@ namespace VRComposer
         public void ApplySymbol(Staff staff, Note target, SymbolKind k)
         {
             if (Score.ApplySymbol(staff, target, k) && target != null && !target.isRest)
-                Player.PreviewNote(staff.program, Score.StepToMidi(staff.clef, target.step, target.accidental));
+                Player.PreviewNote(staff.program, Score.MidiOf(staff.clef, target.step, target.accidental, target.natural));
         }
 
         public void DropChord(int degree, int tick, int length)
@@ -534,7 +594,8 @@ namespace VRComposer
 
         private void TapSymbol(SymbolKind k)
         {
-            if (k == SymbolKind.TrebleClef || k == SymbolKind.BassClef) { var s = CurrentStaff; if (s != null) Score.ApplySymbol(s, null, k); return; }
+            Clef tapClef;
+            if (Score.ClefOf(k, out tapClef)) { var s = CurrentStaff; if (s != null) Score.ApplySymbol(s, null, k); return; }
             if (SelectedNote == null) { View.SetIdleReadout("Select a note first (tap it), or drag the symbol onto a note"); return; }
             ApplySymbol(SelectedNoteStaff, SelectedNote, k);
         }
@@ -627,10 +688,11 @@ namespace VRComposer
             }
             paletteHint.text = hint;
 
-            const int cols = 3;
+            // 17 symbols need 4 columns of smaller tiles to fit above the hint and the bin
+            int cols = tiles.Count > 12 ? 4 : 3;
             const float gap = 10f, top = 116f;
             float tileW = (PalW - 44 - gap * (cols - 1)) / cols;
-            float tileH = tiles.Count > 9 ? 108f : 124f;
+            float tileH = tiles.Count > 12 ? 94f : tiles.Count > 9 ? 108f : 124f;
             for (int i = 0; i < tiles.Count; i++)
             {
                 var cell = UIFactory.Rect("Tile", paletteContent);
@@ -698,8 +760,9 @@ namespace VRComposer
         {
             RectTransform art;
             var bg = TileBase(cell, DragSource.SymbolName(k), false, out art);
-            float ls = k == SymbolKind.TrebleClef ? 9f : k == SymbolKind.Dot || k == SymbolKind.Staccato ? 26f : 14f;
-            Engraver.GlyphCentred(art, Glyphs.Symbol(k), 0, 0, ls, UIFactory.Ink);
+            Clef iconClef;
+            float ls = Score.ClefOf(k, out iconClef) ? 8f : k == SymbolKind.Dot || k == SymbolKind.Staccato ? 24f : k == SymbolKind.Crescendo ? 11f : 13f;
+            Engraver.SymbolIcon(art, k, ls, UIFactory.Ink);
             var src = bg.gameObject.AddComponent<DragSource>();
             src.payloadFactory = () => new DragPayload { kind = DragKind.Symbol, symbol = k };
             src.onTap = () => TapSymbol(k);
@@ -759,6 +822,7 @@ namespace VRComposer
             if (inspectorContent == null) return;
             UIFactory.ClearChildren(inspectorContent);
             var root = inspectorContent;
+            if (pickerOpen) { BuildInstrumentPicker(root); return; }
             float y = -58f;
             bool beginner = Score.IsBeginner;
 
@@ -770,8 +834,9 @@ namespace VRComposer
             UIFactory.PlaceTopLeft((RectTransform)b2.transform, 22 + half + 8, y, half, 50);
             y -= 66f;
 
-            Row(root, ref y, "Place", ThemeManager.Title(Themes != null ? Themes.Current : VenueId.Studio), null, () => Themes.Next(), "Change");
-            Row(root, ref y, "Key", beginner ? Score.Key.name + " (5 notes)" : Score.Key.name, null, () => Score.CycleKey(), "Change");
+            Row(root, ref y, "Place", ThemeManager.Title(Themes != null ? Themes.Current : welcomeTheme), null, () => Themes.Next(), "Change");
+            if (beginner) Row(root, ref y, "Key", Score.Key.name + " (5 notes)", null, () => Score.CycleKey(), "Change");
+            else Row(root, ref y, "Key sig", Score.KeySignatureName(Score.keySignature), null, () => Score.CycleKeySignature(), "Change");
             if (!beginner) Row(root, ref y, "Time", Score.timeSigNumerator + "/" + Score.timeSigDenominator, null, () => Score.CycleTimeSignature(), "Change");
             Row(root, ref y, "Tempo", Score.tempoBpm + " bpm", () => Score.SetTempo(Score.tempoBpm - 4), () => Score.SetTempo(Score.tempoBpm + 4));
             Row(root, ref y, "Bars", Score.bars.ToString(), () => Score.SetBars(Score.bars - 1), () => Score.SetBars(Score.bars + 1));
@@ -783,46 +848,113 @@ namespace VRComposer
             UIFactory.PlaceTopLeft((RectTransform)bc.transform, 170, y, 116, 50);
             var bd = UIFactory.Button(root, Score.backingDrums ? "Drums on" : "Drums off", () => { Score.backingDrums = !Score.backingDrums; Score.NotifyChanged(); }, Score.backingDrums ? UIFactory.Indigo : UIFactory.Dark, 19);
             UIFactory.PlaceTopLeft((RectTransform)bd.transform, 294, y, 114, 50);
-            y -= 70f;
+            y -= 62f;
 
-            var title = UIFactory.Text(root, beginner ? "Melody instrument" : "Instruments", 22, UIFactory.TextLight, TextAlignmentOptions.Left, FontStyles.Bold);
-            UIFactory.PlaceTopLeft(title.rectTransform, 22, y, InsW - 44, 32);
-            y -= 42f;
+            var title = UIFactory.Text(root, "Instruments", 22, UIFactory.TextLight, TextAlignmentOptions.Left, FontStyles.Bold);
+            UIFactory.PlaceTopLeft(title.rectTransform, 22, y, 160, 36);
+            var demo = UIFactory.Button(root, "Load Beethoven 5", LoadDemo, UIFactory.Indigo, 17);
+            UIFactory.PlaceTopLeft((RectTransform)demo.transform, InsW - 22 - 190, y, 190, 36);
+            y -= 44f;
 
-            int shown = beginner ? Mathf.Min(1, Score.staves.Count) : Score.staves.Count;
-            for (int i = 0; i < shown; i++)
+            for (int i = 0; i < Score.staves.Count; i++)
             {
                 var staff = Score.staves[i];
                 int index = i;
-                bool sel = i == SelectedStaff;
+                bool sel = i == SelectedStaff && Score.staves.Count > 1;
                 var nameBtn = UIFactory.Button(root, staff.name + "   >", () =>
                 {
                     SelectedStaff = index;
-                    int next = (Instruments.IndexOfProgram(staff.program) + 1) % Instruments.All.Length;
-                    Score.SetInstrument(staff, Instruments.All[next]);
-                    Player.PreviewNote(staff.program, Score.StepToMidi(staff.clef, 4));
-                }, sel && !beginner ? new Color(0.6f, 0.3f, 0.1f, 1f) : UIFactory.Dark, 21);
-                UIFactory.PlaceTopLeft((RectTransform)nameBtn.transform, 22, y, InsW - 44 - (beginner ? 0 : 62), 50);
+                    OpenInstrumentPicker(staff);
+                }, sel ? new Color(0.6f, 0.3f, 0.1f, 1f) : UIFactory.Dark, 21);
+                UIFactory.PlaceTopLeft((RectTransform)nameBtn.transform, 22, y, InsW - 44 - 62, 50);
                 UIFactory.LabelOf(nameBtn).alignment = TextAlignmentOptions.Left;
-                if (!beginner)
-                {
-                    var del = UIFactory.Button(root, "x", () => Score.RemoveStaff(staff), UIFactory.Red, 24);
-                    UIFactory.PlaceTopLeft((RectTransform)del.transform, InsW - 22 - 54, y, 54, 50);
-                }
-                y -= 58f;
+                var del = UIFactory.Button(root, "x", () => Score.RemoveStaff(staff), UIFactory.Red, 24);
+                UIFactory.PlaceTopLeft((RectTransform)del.transform, InsW - 22 - 54, y, 54, 50);
+                y -= 54f;
             }
-            if (!beginner && Score.staves.Count < Score.MaxStaves)
+            if (Score.staves.Count < Score.MaxStaves)
             {
-                var add = UIFactory.Button(root, "+ Add instrument", () =>
-                {
-                    var def = Instruments.All[(Score.staves.Count) % Instruments.All.Length];
-                    if (Score.AddStaff(def) != null) SelectStaff(Score.staves.Count - 1);
-                }, new Color(0.6f, 0.3f, 0.1f, 1f), 21);
+                var add = UIFactory.Button(root, "+ Add instrument", () => OpenInstrumentPicker(null), new Color(0.6f, 0.3f, 0.1f, 1f), 21);
                 UIFactory.PlaceTopLeft((RectTransform)add.transform, 22, y, InsW - 44, 50);
-                y -= 58f;
+                y -= 54f;
             }
             var hint = UIFactory.Text(root, "Tap a name to change the instrument.", 16, UIFactory.TextDim, TextAlignmentOptions.Left);
             UIFactory.PlaceTopLeft(hint.rectTransform, 22, y - 4, InsW - 44, 24);
+        }
+
+        // ---------------------------------------------------------------- instrument picker
+
+        private bool pickerOpen;
+        private Staff pickerStaff;          // null = add a new instrument
+        private bool melodyInstrumentChosen; // the user picked the first instrument: venues no longer replace it
+
+        private void OpenInstrumentPicker(Staff staff)
+        {
+            pickerOpen = true;
+            pickerStaff = staff;
+            RebuildInspector();
+        }
+
+        private void CloseInstrumentPicker()
+        {
+            pickerOpen = false;
+            pickerStaff = null;
+            RebuildInspector();
+        }
+
+        private void PickInstrument(InstrumentDef def)
+        {
+            var staff = pickerStaff;
+            pickerOpen = false;
+            pickerStaff = null;
+            if (staff != null && Score.staves.Contains(staff))
+            {
+                if (Score.staves.IndexOf(staff) == 0) melodyInstrumentChosen = true;
+                Score.SetInstrument(staff, def);
+            }
+            else
+            {
+                staff = Score.AddStaff(def);
+                if (staff != null) SelectStaff(Score.staves.Count - 1);
+            }
+            if (staff != null) Player.PreviewNote(staff.program, Score.MidiOf(staff.clef, 4));
+            RebuildInspector();
+        }
+
+        /// <summary>Grid of instruments grouped by family, drawn in place of the inspector.</summary>
+        private void BuildInstrumentPicker(RectTransform root)
+        {
+            float y = -24f;
+            string head = pickerStaff != null ? "Change " + pickerStaff.name : "Add an instrument";
+            var t = UIFactory.Text(root, head, 24, UIFactory.TextLight, TextAlignmentOptions.Left, FontStyles.Bold);
+            UIFactory.PlaceTopLeft(t.rectTransform, 22, y, InsW - 44, 36);
+            y -= 46f;
+
+            const int cols = 3;
+            const float gap = 6f, bh = 40f;
+            float bw = (InsW - 44 - gap * (cols - 1)) / cols;
+            string group = null;
+            int col = 0;
+            foreach (var def in Instruments.All)
+            {
+                if (def.group != group)
+                {
+                    if (col != 0) { y -= bh + gap; col = 0; }
+                    group = def.group;
+                    var g = UIFactory.Text(root, group, 16, UIFactory.TextDim, TextAlignmentOptions.Left);
+                    UIFactory.PlaceTopLeft(g.rectTransform, 22, y, InsW - 44, 22);
+                    y -= 24f;
+                }
+                var d = def;
+                bool current = pickerStaff != null && pickerStaff.program == def.program;
+                var b = UIFactory.Button(root, def.name, () => PickInstrument(d), current ? UIFactory.Orange : UIFactory.Dark, 17);
+                UIFactory.PlaceTopLeft((RectTransform)b.transform, 22 + col * (bw + gap), y, bw, bh);
+                if (++col == cols) { col = 0; y -= bh + gap; }
+            }
+            if (col != 0) y -= bh + gap;
+            y -= 6f;
+            var cancel = UIFactory.Button(root, "Cancel", CloseInstrumentPicker, UIFactory.Red, 20);
+            UIFactory.PlaceTopLeft((RectTransform)cancel.transform, 22, y, InsW - 44, 48);
         }
 
         /// <summary>Label · value · [-] [+] (or one wide button).</summary>
@@ -840,14 +972,14 @@ namespace VRComposer
             float pw = plusLabel.Length > 1 ? 110f : 54f;
             var p = UIFactory.Button(root, plusLabel, plus, UIFactory.Dark, plusLabel.Length > 1 ? 19 : 30);
             UIFactory.PlaceTopLeft((RectTransform)p.transform, InsW - 22 - pw, y, pw, 50);
-            y -= 60f;
+            y -= 54f;
         }
 
         // ---------------------------------------------------------------- transport
 
         private void BuildTransport()
         {
-            const float w = 1000f, h = 120f;
+            const float w = 1120f, h = 120f;
             transportCanvas = UIFactory.WorldCanvas("Transport Panel", new Vector2(w, h), panelRoot);
             var root = UIFactory.GlassPanel(transportCanvas, null);
             root.localScale = Vector3.one * (UIFactory.MetersPerPixel * 0.75f);
@@ -864,6 +996,9 @@ namespace VRComposer
             UIFactory.PlaceTopLeft((RectTransform)clear.transform, next(110), -18, 110, 84);
             var recenter = UIFactory.Button(root, "Recenter", Recenter, UIFactory.Dark, 22);
             UIFactory.PlaceTopLeft((RectTransform)recenter.transform, next(130), -18, 130, 84);
+            // Hide / Show the score, palette and inspector to look at the venue (the transport stays).
+            hideButton = UIFactory.Button(root, "Hide", TogglePanels, UIFactory.Dark, 22);
+            UIFactory.PlaceTopLeft((RectTransform)hideButton.transform, next(110), -18, 110, 84);
 
             positionText = UIFactory.Text(root, "", 22, UIFactory.TextLight, TextAlignmentOptions.Left);
             UIFactory.PlaceTopLeft(positionText.rectTransform, x + 6, -40, w - x - 26, 40);
@@ -871,7 +1006,7 @@ namespace VRComposer
 
         // ---------------------------------------------------------------- welcome
 
-        private VenueId welcomeTheme = VenueId.Studio;
+        private VenueId welcomeTheme = VenueId.GoldenHall;
 
         private void BuildWelcome()
         {
@@ -894,7 +1029,8 @@ namespace VRComposer
 
             var l1 = UIFactory.Text(root, "1.  Pick a place", 22, UIFactory.TextLight, TextAlignmentOptions.Left, FontStyles.Bold);
             UIFactory.PlaceTopLeft(l1.rectTransform, 40, -150, 400, 32);
-            float bw = (W - 80 - 4 * 10) / 5f;
+            int nv = ThemeManager.Order.Length;
+            float bw = (W - 80 - (nv - 1) * 10) / nv;
             for (int i = 0; i < ThemeManager.Order.Length; i++)
             {
                 var v = ThemeManager.Order[i];
@@ -917,6 +1053,8 @@ namespace VRComposer
             var b = UIFactory.Button(root, "", () =>
             {
                 SetMode(mode);
+                // Advanced opens on the Beethoven 5 quartet unless something is already written
+                if (mode == ComposeMode.Advanced && loadDemoOnAdvanced && Score.staves.TrueForAll(s => s.notes.Count == 0)) LoadDemo();
                 ShowComposer(true);
                 if (Themes.Current != welcomeTheme) Themes.Set(welcomeTheme);
                 Recenter();

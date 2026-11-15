@@ -1,7 +1,7 @@
 # VR Composer (Quest 2)
 
 Drag real music notation onto a stave in VR, press Play, and hear it through a General MIDI
-SoundFont, in a studio, a concert hall, a jazz club or a cathedral.
+SoundFont, in a concert hall, a recital room, a jazz club or a cathedral.
 Playback is deterministic: every note plays exactly as written, and the backing band only plays
 the chords you placed.
 
@@ -28,15 +28,34 @@ the wrist menu, and your score is kept.
   the second half of the bar).
 - Tiles marked **Suggested** fit the next empty bar (rule-based: close to your last note, ending on
   a chord tone, a final motif that ends on the tonic, common chord moves). Nothing is placed for you.
+- Add more instruments from the inspector (**+ Add instrument**), up to 4, exactly as in Advanced.
 - Backing band: the chord lane plays sustained strings plus a bass note every half bar, and
   drums can be toggled on.
+- While you drag, a box shows how well the spot fits (you can still drop anywhere):
+  **green** = great (a note of the chord underneath, or a smooth step), **yellow** = OK (not in
+  the chord, a big jump, or it replaces a note), **red** = sounds off (a semitone clash with the
+  chord, a jump of more than an octave, or it does not fit in the bar). Chord blocks are rated
+  against the melody above them. The readout says why. Advanced mode has no colours.
 
 **Advanced**: note by note, with full notation.
-- Whole to 16th notes, dotted notes and rests, up to 4 instruments (treble or bass clef).
-- **Symbols** tab: sharp, flat, natural, dot, staccato, accent, p, f and clefs. Drop one on a
-  note, or select a note and tap the symbol. They change the sound: accidentals change pitch,
-  staccato halves the length, accent and f play louder, and p plays softer.
+- Whole to 16th notes, dotted notes and rests, up to 4 instruments (treble, alto or bass clef).
+- **Symbols** tab: sharp, flat, natural, dot, tie, fermata, staccato, accent, pp, p, f, ff, sf,
+  cresc. and the three clefs. Drop one on a note, or select a note and tap the symbol. They change
+  the sound:
+  - accidentals change the pitch;
+  - a tie joins a note to the next note of the same pitch, so they sound as one;
+  - a fermata holds the note (or rest) twice as long, and the whole band waits for it;
+  - staccato halves the length, accent and sf give one note a push;
+  - **dynamics last until the next marking** on the same staff, like on paper (pp 40, p 58,
+    no marking 88, f 104, ff 120 velocity); cresc. gets louder up to the next marking.
+- Key signature (Key sig row in the inspector, up to 4 flats or sharps): notes follow it, and an
+  accidental or natural on a note overrides it.
 - Any time signature from the inspector, and the same chord lane and backing as Beginner.
+- **Demo**: choosing Advanced on the welcome screen (with an empty score) opens Beethoven's
+  Symphony No. 5, bars 1-24, arranged for string quartet (Violin I, Violin II, Viola in alto clef,
+  Cello), in C minor, 2/4, half note = 108. The inspector's "Load Beethoven 5" button loads it
+  any time (it replaces the score). Turn the automatic load off with VR Composer object >
+  Load Demo On Advanced.
 
 ## Accurate placement
 
@@ -53,6 +72,16 @@ the wrist menu, and your score is kept.
   Teleport and snap-turn are paused while a note is selected.
 - Drag a note to move it, or onto the **Bin** to delete it. **Undo** is on the transport.
 
+## Instruments
+
+**+ Add instrument** (inspector) opens a picker with 24 instruments in 5 families (Keys, Winds,
+Brass, Strings, Voice). Tap an instrument's name to change it, or **x** to remove it. Both modes
+allow up to 4.
+
+All instruments play at the same loudness. Each GeneralUser GS preset was measured offline (piano
+was about 5 dB quieter than flute), and `Instruments.VolumeFor` sets the MIDI channel volume to
+compensate.
+
 ## Controls
 
 | Where | What |
@@ -60,19 +89,25 @@ the wrist menu, and your score is kept.
 | Palette (left) | Notes / Motifs / Chords tabs (Beginner) or Notes / Symbols / Chords (Advanced), plus the Bin |
 | Score (centre) | staves, chord lane, Play button, page arrows |
 | Inspector (right) | mode, place, key, time signature, tempo, bars, backing band, instruments |
-| Transport (under the score) | Play/Stop, Loop, Undo, Clear, Recenter, bar/beat |
+| Transport (under the score) | Play/Stop, Loop, Undo, Clear, Recenter, **Hide/Show** (score, palette and inspector), bar/beat |
 | Wrist menu (left hand) | Play/Stop, Hide/Show panels, Mode, Recenter, Place |
 | Right controller | A = Play/Stop, B = deselect, thumbstick = nudge selected note |
-| Keyboard (editor) | Space = Play/Stop, arrows = nudge, Esc = deselect |
+| Either thumbstick click | Recenter: panels (and the venue) move in front of you |
+| Keyboard (editor) | Space = Play/Stop, arrows = nudge, Esc = deselect, R = recenter |
 
 Set `paletteOnLeft = false` on the VR Composer object to swap the side panels.
 
 ## Places
 
-Studio (your own room, neutral sound), Golden Hall, Recital Room, Jazz Club and Cathedral. Each
-venue has its own reverb and its own musicians who play along with your notes. In Beginner mode
-the venue's band instrument plays your melody. After a full play-through (Loop off) the audience
-applauds and the musicians bow.
+Golden Hall (the default), Recital Room, Jazz Club and Cathedral. Each venue has its own reverb and
+its own musicians who play along with your notes. In Beginner mode the venue's band instrument
+plays your melody until you pick an instrument yourself. After a full play-through (Loop off) the
+musicians bow. While the music plays, the score and side panels hide so you can watch the band
+(`hidePanelsWhilePlaying`).
+
+To keep the frame rate up on Quest Link, the audience, the applause and the background crowd sound
+are off. The code is kept: tick **Show Audience**, **Venue Ambience** or **Applause** on the VR
+Composer object to bring them back.
 
 ## Files
 
@@ -80,7 +115,10 @@ applauds and the musicians bow.
   articulations, the chord lane, keys, undo, and the pitch mapping.
 - `Scripts/BeginnerKit.cs`: pentatonic scales, motifs, chords and the "fits next" rules.
 - `Scripts/ScorePlayer.cs`: MeltySynth in `OnAudioFilterRead` with sample-accurate events,
-  dynamics and articulations, plus the backing band (chords ch 11, bass ch 12, drums ch 9).
+  plus the backing band (chords ch 11, bass ch 12, drums ch 9).
+- `Scripts/Performance.cs`: written notes to sounding notes (ties, carried dynamics, cresc., sf,
+  staccato) and the fermata time map.
+- `Scripts/DemoScores.cs`: the Beethoven 5 quartet, written in a compact text notation.
 - `Scripts/Engraving.cs` + `LelandGlyphs.cs`: SMuFL engraving (stems, flags, ledger lines, dots,
   accidentals, articulations, dynamics) with Leland glyphs.
 - `Scripts/ScoreView.cs`: the score panel, drop zones, drag overlays and the playhead.

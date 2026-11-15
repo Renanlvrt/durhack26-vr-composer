@@ -10,6 +10,13 @@ namespace VRComposer
     /// otherwise convincing stand-ins are synthesised so the experience is never silent.
     public class VenueAudio : MonoBehaviour
     {
+        /// Background crowd/room sound and the end-of-piece applause. Both are off: they were too loud,
+        /// and synthesising them on the main thread (16 s and 8 s of audio) froze the headset for a
+        /// moment on every venue switch and at the end of each piece. The code is kept: set to true
+        /// (VR Composer object > Venue Ambience / Applause) to bring them back.
+        public static bool EnableAmbience = false;
+        public static bool EnableApplause = false;
+
         AudioReverbFilter reverb;
         AudioSource ambience, applause, narrator;
         readonly Dictionary<string, AudioClip> generated = new Dictionary<string, AudioClip>();
@@ -21,14 +28,24 @@ namespace VRComposer
             // Reverb on the listener colours everything in the room: the music, the crowd and the applause.
             reverb = listener.gameObject.AddComponent<AudioReverbFilter>();
             reverb.reverbPreset = AudioReverbPreset.Room;
-            ambience = gameObject.AddComponent<AudioSource>();
+            // Each source lives on its own child object. This GameObject also holds the ScorePlayer,
+            // whose OnAudioFilterRead synth must be the only AudioSource here: with several, Unity
+            // logs an error on every audio callback and runs the synth once per source.
+            ambience = NewSource("Venue Ambience");
             ambience.loop = true; ambience.playOnAwake = false; ambience.spatialBlend = 0f;
-            applause = gameObject.AddComponent<AudioSource>();
+            applause = NewSource("Venue Applause");
             applause.playOnAwake = false; applause.spatialBlend = 0f;
-            narrator = gameObject.AddComponent<AudioSource>();
+            narrator = NewSource("Venue Narrator");
             narrator.playOnAwake = false; narrator.spatialBlend = 0f;
             narrator.bypassListenerEffects = true;   // the guide's voice stays dry and close
             narrator.priority = 0;
+        }
+
+        AudioSource NewSource(string name)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(transform, false);
+            return go.AddComponent<AudioSource>();
         }
 
         static string Key(VenueId v) => v switch
@@ -50,7 +67,7 @@ namespace VRComposer
                 _ => AudioReverbPreset.Room,
             };
             ambience.Stop();
-            if (v == VenueId.Studio) return;
+            if (v == VenueId.Studio || !EnableAmbience) return;
             var clip = Load("ambience_" + Key(v)) ?? Generated("amb_" + Key(v), () => SynthAmbience(v));
             ambience.clip = clip;
             ambience.volume = v switch { VenueId.JazzClub => 0.5f, VenueId.GoldenHall => 0.35f, VenueId.Cathedral => 0.4f, _ => 0.35f };
@@ -60,6 +77,7 @@ namespace VRComposer
         /// Plays applause for the current venue and returns how long it lasts.
         public float PlayApplause()
         {
+            if (!EnableApplause) return 0f;
             var clip = Load("applause_" + Key(current)) ?? Generated("app_" + Key(current), () => SynthApplause(current));
             applause.clip = clip;
             applause.volume = current == VenueId.JazzClub ? 0.8f : 0.9f;

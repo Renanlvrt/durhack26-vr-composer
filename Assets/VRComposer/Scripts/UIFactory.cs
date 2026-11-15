@@ -139,7 +139,9 @@ namespace VRComposer
             t.fontStyle = style;
             t.raycastTarget = false;
             t.textWrappingMode = TextWrappingModes.NoWrap;
-            t.overflowMode = TextOverflowModes.Ellipsis;
+            // LiberationSans has no '…' glyph: Ellipsis would fall back to Truncate anyway, but log a
+            // warning with a stack trace for every label (about 2000 per start), which stalls the editor.
+            t.overflowMode = TextOverflowModes.Truncate;
             return t;
         }
 

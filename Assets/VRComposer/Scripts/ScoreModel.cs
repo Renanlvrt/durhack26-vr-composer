@@ -4,13 +4,19 @@ using UnityEngine;
 
 namespace VRComposer
 {
-    public enum Clef { Treble, Bass }
+    public enum Clef { Treble, Bass, Alto }
     public enum ComposeMode { Beginner, Advanced }
 
     /// <summary>Note values, measured in 16th-note ticks.</summary>
     public enum Duration { Whole = 16, Half = 8, Quarter = 4, Eighth = 2, Sixteenth = 1 }
 
-    public enum SymbolKind { Sharp, Flat, Natural, Dot, Staccato, Accent, Piano, Forte, TrebleClef, BassClef }
+    // Palette order (the Symbols tab lists them in this order).
+    public enum SymbolKind
+    {
+        Sharp, Flat, Natural, Dot, Tie, Fermata, Staccato, Accent,
+        Pianissimo, Piano, Forte, Fortissimo, Sforzando, Crescendo,
+        TrebleClef, AltoClef, BassClef
+    }
 
     public static class Durations
     {
@@ -49,7 +55,11 @@ namespace VRComposer
         public bool natural;           // show a natural sign
         public bool staccato;
         public bool accent;
-        public int dynamic;            // -1 p, 0 default, +1 f
+        public int dynamic;            // -2 pp, -1 p, 0 none, +1 f, +2 ff (lasts until the next marking)
+        public bool sforzando;         // sf: this note only, strongly accented
+        public int hairpin;            // +1 cresc., -1 dim.: ramps to the next dynamic marking
+        public bool tie;               // tied to the next note of the same pitch on this staff
+        public bool fermata;           // held longer (notes and rests)
 
         public int Length16 { get { return dotted ? (int)duration * 3 / 2 : (int)duration; } }
         public int End { get { return tick + Length16; } }
@@ -89,35 +99,77 @@ namespace VRComposer
         public string name;
         public int program;
         public Clef clef;
-        public InstrumentDef(string name, int program, Clef clef) { this.name = name; this.program = program; this.clef = clef; }
+        public string group;
+        /// <summary>Measured loudness of this GeneralUser GS preset at velocity 90 (dB, mean of the
+        /// average and the attack level of a short phrase). Used to balance instruments.</summary>
+        public float loudnessDb;
+        public InstrumentDef(string name, int program, Clef clef, string group = "", float loudnessDb = -31f)
+        { this.name = name; this.program = program; this.clef = clef; this.group = group; this.loudnessDb = loudnessDb; }
     }
 
     public static class Instruments
     {
-        // General MIDI program numbers (0-based).
+        // General MIDI program numbers (0-based). Loudness measured offline with MeltySynth and
+        // GeneralUser GS (scratch synthtest): the piano is ~5 dB quieter than the flute, so without
+        // correction it sounded very quiet.
         public static readonly InstrumentDef[] All =
         {
-            new InstrumentDef("Flute", 73, Clef.Treble),
-            new InstrumentDef("Alto Sax", 65, Clef.Treble),
-            new InstrumentDef("Violin", 40, Clef.Treble),
-            new InstrumentDef("Clarinet", 71, Clef.Treble),
-            new InstrumentDef("Oboe", 68, Clef.Treble),
-            new InstrumentDef("Trumpet", 56, Clef.Treble),
-            new InstrumentDef("French Horn", 60, Clef.Treble),
-            new InstrumentDef("Harp", 46, Clef.Treble),
-            new InstrumentDef("Piano", 0, Clef.Treble),
-            new InstrumentDef("Marimba", 12, Clef.Treble),
-            new InstrumentDef("Strings", 48, Clef.Treble),
-            new InstrumentDef("Cello", 42, Clef.Bass),
-            new InstrumentDef("Bassoon", 70, Clef.Bass),
-            new InstrumentDef("Trombone", 57, Clef.Bass),
-            new InstrumentDef("Tuba", 58, Clef.Bass),
+            new InstrumentDef("Piano", 0, Clef.Treble, "Keys", -34.4f),
+            new InstrumentDef("Electric Piano", 4, Clef.Treble, "Keys", -40.2f),
+            new InstrumentDef("Organ", 19, Clef.Treble, "Keys", -36.0f),
+            new InstrumentDef("Harp", 46, Clef.Treble, "Keys", -32.9f),
+            new InstrumentDef("Vibraphone", 11, Clef.Treble, "Keys", -36.0f),
+            new InstrumentDef("Marimba", 12, Clef.Treble, "Keys", -34.0f),
+            new InstrumentDef("Guitar", 24, Clef.Treble, "Keys", -36.9f),
+            new InstrumentDef("Flute", 73, Clef.Treble, "Winds", -29.3f),
+            new InstrumentDef("Oboe", 68, Clef.Treble, "Winds", -31.9f),
+            new InstrumentDef("Clarinet", 71, Clef.Treble, "Winds", -33.5f),
+            new InstrumentDef("Alto Sax", 65, Clef.Treble, "Winds", -33.5f),
+            new InstrumentDef("Tenor Sax", 66, Clef.Treble, "Winds", -33.9f),
+            new InstrumentDef("Bassoon", 70, Clef.Bass, "Winds", -32.3f),
+            new InstrumentDef("Trumpet", 56, Clef.Treble, "Brass", -34.7f),
+            new InstrumentDef("French Horn", 60, Clef.Treble, "Brass", -35.5f),
+            new InstrumentDef("Trombone", 57, Clef.Bass, "Brass", -35.7f),
+            new InstrumentDef("Tuba", 58, Clef.Bass, "Brass", -33.8f),
+            new InstrumentDef("Violin", 40, Clef.Treble, "Strings", -32.0f),
+            new InstrumentDef("Viola", 41, Clef.Alto, "Strings", -36.3f),
+            new InstrumentDef("Cello", 42, Clef.Bass, "Strings", -32.2f),
+            new InstrumentDef("Double Bass", 43, Clef.Bass, "Strings", -36.1f),
+            new InstrumentDef("Strings", 48, Clef.Treble, "Strings", -35.1f),
+            new InstrumentDef("Bass Guitar", 32, Clef.Bass, "Strings", -31.6f),
+            new InstrumentDef("Choir", 52, Clef.Treble, "Voice", -36.0f),
         };
+
+        /// <summary>Loudness every instrument is balanced to (dB, same measure as loudnessDb).</summary>
+        public const float TargetDb = -31f;
+        /// <summary>Channel volume (CC7) that means "no correction". Below the GM default of 100 so
+        /// quiet instruments can be boosted; ScorePlayer raises the master volume to compensate.</summary>
+        public const int BaseVolume = 85;
 
         public static int IndexOfProgram(int program)
         {
             for (int i = 0; i < All.Length; i++) if (All[i].program == program) return i;
             return 0;
+        }
+
+        public static InstrumentDef Find(string name)
+        {
+            foreach (var d in All) if (d.name == name) return d;
+            return All[0];
+        }
+
+        public static bool Has(int program)
+        {
+            foreach (var d in All) if (d.program == program) return true;
+            return false;
+        }
+
+        /// <summary>CC7 channel volume that brings this program to TargetDb (gain = (cc/127)^2).</summary>
+        public static int VolumeFor(int program)
+        {
+            if (!Has(program)) return BaseVolume;
+            float gainDb = TargetDb - All[IndexOfProgram(program)].loudnessDb;
+            return Mathf.Clamp(Mathf.RoundToInt(BaseVolume * Mathf.Pow(10f, gainDb / 40f)), 1, 127);
         }
     }
 
@@ -141,7 +193,7 @@ namespace VRComposer
         public const int MinStep = -4;   // treble: A3, bass: C2
         public const int MaxStep = 12;   // treble: C6, bass: E4
         public const int MinBars = 1;
-        public const int MaxBars = 16;
+        public const int MaxBars = 32;
 
         public static readonly int[][] TimeSignatures =
         {
@@ -158,6 +210,9 @@ namespace VRComposer
 
         public ComposeMode mode = ComposeMode.Beginner;
         public int keyIndex;
+        /// <summary>Key signature in fifths: -3 = three flats (C minor / Eb major), +2 = two sharps.
+        /// Advanced only; Beginner keeps 0 because its pentatonic scales use natural notes.</summary>
+        public int keySignature;
         public int timeSigNumerator = 4;
         public int timeSigDenominator = 4;
         public int bars = 4;
@@ -189,6 +244,7 @@ namespace VRComposer
 
         private readonly List<Snapshot> undo = new List<Snapshot>();
         public bool CanUndo { get { return undo.Count > 0; } }
+        public void ClearUndo() { undo.Clear(); }
 
         /// <summary>Call before every edit that should be undoable.</summary>
         public void SaveUndo()
@@ -264,11 +320,26 @@ namespace VRComposer
         public void SetMode(ComposeMode m)
         {
             mode = m;
-            if (m == ComposeMode.Beginner) { timeSigNumerator = 4; timeSigDenominator = 4; }
+            if (m == ComposeMode.Beginner) { timeSigNumerator = 4; timeSigDenominator = 4; keySignature = 0; }
             NotifyChanged();
         }
 
         public void CycleKey() { keyIndex = (keyIndex + 1) % Keys.Length; NotifyChanged(); }
+
+        private static readonly int[] KeySigCycle = { 0, -1, -2, -3, -4, 1, 2, 3, 4 };
+        public void CycleKeySignature()
+        {
+            int i = Array.IndexOf(KeySigCycle, keySignature);
+            keySignature = KeySigCycle[(i + 1) % KeySigCycle.Length];
+            NotifyChanged();
+        }
+
+        public static string KeySignatureName(int fifths)
+        {
+            if (fifths == 0) return "none";
+            int n = Math.Abs(fifths);
+            return n + (fifths < 0 ? (n == 1 ? " flat" : " flats") : (n == 1 ? " sharp" : " sharps"));
+        }
 
         public void CycleTimeSignature()
         {
@@ -386,14 +457,15 @@ namespace VRComposer
 
         public bool ApplySymbol(Staff s, Note n, SymbolKind k)
         {
-            if (k == SymbolKind.TrebleClef || k == SymbolKind.BassClef)
+            Clef clef;
+            if (ClefOf(k, out clef))
             {
                 SaveUndo();
-                SetClefKeepPitch(s, k == SymbolKind.TrebleClef ? Clef.Treble : Clef.Bass);
+                SetClefKeepPitch(s, clef);
                 return true;
             }
             if (n == null) return false;
-            if (n.isRest && k != SymbolKind.Dot) return false;
+            if (n.isRest && k != SymbolKind.Dot && k != SymbolKind.Fermata) return false;
             SaveUndo();
             switch (k)
             {
@@ -402,8 +474,21 @@ namespace VRComposer
                 case SymbolKind.Natural: n.accidental = 0; n.natural = !n.natural; break;
                 case SymbolKind.Staccato: n.staccato = !n.staccato; break;
                 case SymbolKind.Accent: n.accent = !n.accent; break;
+                case SymbolKind.Pianissimo: n.dynamic = n.dynamic == -2 ? 0 : -2; break;
                 case SymbolKind.Piano: n.dynamic = n.dynamic == -1 ? 0 : -1; break;
                 case SymbolKind.Forte: n.dynamic = n.dynamic == 1 ? 0 : 1; break;
+                case SymbolKind.Fortissimo: n.dynamic = n.dynamic == 2 ? 0 : 2; break;
+                case SymbolKind.Sforzando: n.sforzando = !n.sforzando; break;
+                case SymbolKind.Crescendo: n.hairpin = n.hairpin == 1 ? 0 : 1; break;
+                case SymbolKind.Fermata: n.fermata = !n.fermata; break;
+                case SymbolKind.Tie:
+                    // Ties every note of a chord at once, so the whole chord sustains.
+                    bool on = !n.tie;
+                    foreach (var st in staves)
+                        if (st.notes.Contains(n))
+                            foreach (var o in st.notes) if (o.tick == n.tick && !o.isRest) o.tie = on;
+                    n.tie = on;
+                    break;
                 case SymbolKind.Dot:
                     if (!n.dotted && (n.duration == Duration.Whole || n.duration == Duration.Sixteenth)) { undo.RemoveAt(undo.Count - 1); return false; }
                     n.dotted = !n.dotted;
@@ -457,7 +542,71 @@ namespace VRComposer
         public static int Mod(int a, int b) { return ((a % b) + b) % b; }
 
         /// <summary>Diatonic index (octave * 7 + letter) of the bottom staff line: E4 treble, G2 bass.</summary>
-        public static int BottomLineDiatonic(Clef c) { return c == Clef.Treble ? 4 * 7 + 2 : 2 * 7 + 4; }
+        public static int BottomLineDiatonic(Clef c)
+        {
+            switch (c)
+            {
+                case Clef.Bass: return 2 * 7 + 4;    // G2
+                case Clef.Alto: return 3 * 7 + 3;    // F3 (middle line = C4)
+                default: return 4 * 7 + 2;           // E4
+            }
+        }
+
+        public static bool ClefOf(SymbolKind k, out Clef clef)
+        {
+            switch (k)
+            {
+                case SymbolKind.TrebleClef: clef = Clef.Treble; return true;
+                case SymbolKind.AltoClef: clef = Clef.Alto; return true;
+                case SymbolKind.BassClef: clef = Clef.Bass; return true;
+                default: clef = Clef.Treble; return false;
+            }
+        }
+
+        // ---------------------------------------------------------------- key signature
+
+        private static readonly int[] FlatOrder = { 6, 2, 5, 1, 4, 0, 3 };   // B E A D G C F
+        private static readonly int[] SharpOrder = { 3, 0, 4, 1, 5, 2, 6 };  // F C G D A E B
+
+        /// <summary>-1, 0 or +1: what the key signature does to this letter (0 = C ... 6 = B).</summary>
+        public static int KeyAlteration(int keySig, int letter)
+        {
+            int n = Math.Min(7, Math.Abs(keySig));
+            var order = keySig < 0 ? FlatOrder : SharpOrder;
+            for (int i = 0; i < n; i++) if (order[i] == Mod(letter, 7)) return keySig < 0 ? -1 : 1;
+            return 0;
+        }
+
+        /// <summary>Letters of the key signature in drawing order (B E A ... or F C G ...).</summary>
+        public static int[] KeySignatureLetters(int keySig)
+        {
+            int n = Math.Min(7, Math.Abs(keySig));
+            var order = keySig < 0 ? FlatOrder : SharpOrder;
+            var r = new int[n];
+            Array.Copy(order, r, n);
+            return r;
+        }
+
+        /// <summary>Sounding alteration of a note: its own accidental, a natural, or the key signature.</summary>
+        public int AlterationOf(Clef clef, int step, int accidental, bool natural)
+        {
+            if (accidental != 0) return accidental;
+            if (natural) return 0;
+            return KeyAlteration(keySignature, Diatonic(clef, step));
+        }
+
+        /// <summary>The one pitch function: what a note sounds like, key signature included.</summary>
+        public int MidiOf(Clef clef, int step, int accidental = 0, bool natural = false)
+        {
+            return DiatonicToMidi(Diatonic(clef, step)) + AlterationOf(clef, step, accidental, natural);
+        }
+
+        public int MidiOf(Staff s, Note n) { return MidiOf(s.clef, n.step, n.accidental, n.natural); }
+
+        public string NameOf(Clef clef, int step, int accidental = 0, bool natural = false)
+        {
+            return StepToName(clef, step, AlterationOf(clef, step, accidental, natural));
+        }
 
         public static int Diatonic(Clef clef, int step) { return BottomLineDiatonic(clef) + step; }
         public static int StepFromDiatonic(Clef clef, int diatonic) { return diatonic - BottomLineDiatonic(clef); }

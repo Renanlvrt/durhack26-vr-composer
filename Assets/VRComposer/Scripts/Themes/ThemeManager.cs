@@ -12,7 +12,9 @@ namespace VRComposer
     /// </summary>
     public class ThemeManager : MonoBehaviour
     {
-        public static readonly VenueId[] Order = { VenueId.Studio, VenueId.GoldenHall, VenueId.RecitalRoom, VenueId.JazzClub, VenueId.Cathedral };
+        // Studio (the empty template room) is no longer offered: you always compose in a venue.
+        // VenueId.Studio stays internally as the "no venue yet / fallback" state.
+        public static readonly VenueId[] Order = { VenueId.GoldenHall, VenueId.RecitalRoom, VenueId.JazzClub, VenueId.Cathedral };
 
         public VenueId Current { get; private set; }
         public bool Busy { get; private set; }
@@ -24,9 +26,15 @@ namespace VRComposer
         private GameObject fader;
         private Material faderMat;
         private readonly List<Behaviour> disabledSceneLights = new List<Behaviour>();
-        private readonly List<GameObject> hiddenSceneRoots = new List<GameObject>();
+        private readonly List<Renderer> hiddenSceneRenderers = new List<Renderer>();
+        private GameObject safetyFloor;
         private UnityEngine.Rendering.AmbientMode origAmbientMode;
         private Color origAmbient;
+        private bool savedCamera;
+        private CameraClearFlags origClear;
+        private Color origBackground;
+        private Material origSkybox;
+        private bool origFog;
         private int lastBeat = -1;
 
         public static string Title(VenueId v)
@@ -91,23 +99,28 @@ namespace VRComposer
                     venue = Venues.Create(id, stage);
                     RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
                     RenderSettings.ambientLight = venue.ambient;
+                    SetIndoorBackground(venue.ambient * 0.3f);
+                    Debug.Log("[VRComposer] Venue " + id + " built (" + venue.root.GetComponentsInChildren<Renderer>().Length + " meshes).");
                 }
                 else
                 {
                     RenderSettings.ambientMode = origAmbientMode;
                     RenderSettings.ambientLight = origAmbient;
+                    RestoreBackground();
                 }
             }
             catch (System.Exception e)
             {
                 // Never leave the user in the dark: fall back to the studio.
                 Debug.LogError("[VRComposer] Could not build venue " + id + ": " + e);
+                if (app.View != null) app.View.SetIdleReadout("Could not load " + Title(id) + ": " + e.GetType().Name + " " + e.Message);
                 if (venue != null && venue.root != null) Destroy(venue.root);
                 venue = null;
                 RestoreScene();
                 Current = VenueId.Studio;
                 RenderSettings.ambientMode = origAmbientMode;
                 RenderSettings.ambientLight = origAmbient;
+                RestoreBackground();
             }
             if (venueAudio != null && venueAudio.enabled) { try { venueAudio.SetVenue(Current); } catch (System.Exception e) { Debug.LogWarning(e); } }
             try { app.OnThemeChanged(Current, venue != null ? venue.instrument : -1); } catch (System.Exception e) { Debug.LogException(e); }
@@ -115,6 +128,54 @@ namespace VRComposer
             yield return null;
             yield return Fade(0f, 0.45f);
             Busy = false;
+        }
+
+        /// <summary>
+        /// Indoors there is no sky: the camera clears to a dark colour (as in durhack.4) and the
+        /// skybox is removed, so any gap in the venue geometry looks like a dark room, not open sky.
+        /// </summary>
+        private void SetIndoorBackground(Color c)
+        {
+            var cam = Camera.main;
+            if (cam != null && !savedCamera)
+            {
+                savedCamera = true;
+                origClear = cam.clearFlags;
+                origBackground = cam.backgroundColor;
+                origSkybox = RenderSettings.skybox;
+                origFog = RenderSettings.fog;
+            }
+            if (cam != null)
+            {
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                c.a = 1f;
+                cam.backgroundColor = c;
+            }
+            RenderSettings.skybox = null;
+            RenderSettings.fog = false;
+            DynamicGI.UpdateEnvironment();
+        }
+
+        private void RestoreBackground()
+        {
+            if (!savedCamera) return;
+            var cam = Camera.main;
+            if (cam != null)
+            {
+                cam.clearFlags = origClear;
+                cam.backgroundColor = origBackground;
+            }
+            RenderSettings.skybox = origSkybox;
+            RenderSettings.fog = origFog;
+            DynamicGI.UpdateEnvironment();
+            savedCamera = false;
+        }
+
+        /// <summary>Re-aligns the venue with where the user now stands and looks (Recenter).</summary>
+        public void Realign()
+        {
+            if (venue == null) return;
+            PlaceStage();
         }
 
         /// <summary>Venues are built around a user standing at the origin facing +Z.</summary>
@@ -134,11 +195,20 @@ namespace VRComposer
         private void HideScene()
         {
             // The template's room and its sun would clash with the venue's own floor and lights.
+            // Only its visuals are hidden: its colliders stay, because they are the floor the XR rig
+            // stands on (gravity) and the teleport areas. Deactivating them made you fall through.
             foreach (var name in new[] { "Environment", "Teleport Area Setup" })
             {
                 var go = GameObject.Find(name);
-                if (go != null && go.activeSelf) { go.SetActive(false); hiddenSceneRoots.Add(go); }
+                if (go == null || !go.activeInHierarchy) continue;
+                foreach (var r in go.GetComponentsInChildren<Renderer>())
+                {
+                    if (!r.enabled) continue;
+                    r.enabled = false;
+                    hiddenSceneRenderers.Add(r);
+                }
             }
+            EnsureSafetyFloor();
             foreach (var l in FindObjectsByType<Light>(FindObjectsInactive.Exclude))
             {
                 if (l.transform.IsChildOf(stage) || !l.enabled) continue;
@@ -149,10 +219,30 @@ namespace VRComposer
 
         private void RestoreScene()
         {
-            foreach (var go in hiddenSceneRoots) if (go != null) go.SetActive(true);
-            hiddenSceneRoots.Clear();
+            foreach (var r in hiddenSceneRenderers) if (r != null) r.enabled = true;
+            hiddenSceneRenderers.Clear();
+            if (safetyFloor != null) safetyFloor.SetActive(false);
             foreach (var l in disabledSceneLights) if (l != null) l.enabled = true;
             disabledSceneLights.Clear();
+        }
+
+        /// <summary>
+        /// Venue floors are visual only (no colliders, to keep Quest physics cheap), so an invisible
+        /// floor under the stage catches the rig in case the scene has no floor collider of its own.
+        /// </summary>
+        private void EnsureSafetyFloor()
+        {
+            if (safetyFloor == null)
+            {
+                safetyFloor = new GameObject("VR Composer Venue Floor (collider)");
+                var box = safetyFloor.AddComponent<BoxCollider>();
+                box.size = new Vector3(60f, 0.2f, 60f);
+                box.center = new Vector3(0f, -0.1f, 0f);   // top surface exactly at floor height
+            }
+            safetyFloor.transform.SetParent(stage, false);
+            safetyFloor.transform.localPosition = Vector3.zero;
+            safetyFloor.transform.localRotation = Quaternion.identity;
+            safetyFloor.SetActive(true);
         }
 
         private IEnumerator Fade(float to, float seconds)

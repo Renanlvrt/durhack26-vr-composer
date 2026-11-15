@@ -168,7 +168,7 @@ namespace VRComposer
                 case DragKind.Symbol:
                     var s = Engraver.Container(g.glyphRoot, "Held", Vector2.zero);
                     s.anchorMin = s.anchorMax = new Vector2(0.5f, 0.5f);
-                    Engraver.GlyphCentred(s, Glyphs.Symbol(p.symbol), 0, 0, p.symbol == SymbolKind.Dot || p.symbol == SymbolKind.Staccato ? 40f : ls, UIFactory.Orange);
+                    Engraver.SymbolIcon(s, p.symbol, p.symbol == SymbolKind.Dot || p.symbol == SymbolKind.Staccato ? 40f : ls, UIFactory.Orange);
                     break;
                 case DragKind.Motif: chipText = BeginnerKit.Motifs[p.motif].name; break;
                 case DragKind.Chord:
@@ -266,13 +266,15 @@ namespace VRComposer
             Component zone = null;
             if (hit.gameObject != null)
             {
-                zone = hit.gameObject.GetComponentInParent<BinZone>();
-                if (zone == null && payload.kind != DragKind.Chord && payload.kind != DragKind.MoveChord) zone = hit.gameObject.GetComponentInParent<StaffZone>();
-                if (zone == null && (payload.kind == DragKind.Chord || payload.kind == DragKind.MoveChord)) zone = hit.gameObject.GetComponentInParent<ChordLaneZone>();
+                zone = Find<BinZone>(hit.gameObject);
+                if (zone == null && payload.kind != DragKind.Chord && payload.kind != DragKind.MoveChord) zone = Find<StaffZone>(hit.gameObject);
+                if (zone == null && (payload.kind == DragKind.Chord || payload.kind == DragKind.MoveChord)) zone = Find<ChordLaneZone>(hit.gameObject);
             }
             if (zone != currentZone) { filter.Reset(); snap.Reset(); currentZone = zone; }
 
             var p = new Pending { time = now, zone = zone };
+            try
+            {
             if (zone is StaffZone)
             {
                 var sz = (StaffZone)zone;
@@ -299,8 +301,17 @@ namespace VRComposer
                 if (hit.gameObject != null) DragGhost.Move(hit.worldPosition, hit.gameObject.transform.rotation);
                 else DragGhost.Hide();
             }
+            }
+            catch (Exception ex) { Debug.LogException(ex); }
             history.Add(p);
             if (history.Count > 90) history.RemoveRange(0, 30);
+        }
+
+        /// <summary>GetComponentInParent that returns a real null (the editor can return "fake null" objects, which pass `is` checks).</summary>
+        private static Component Find<T>(GameObject g) where T : Component
+        {
+            var c = g.GetComponentInParent<T>();
+            return c != null ? c : null;
         }
 
         private Func<int, bool> AllowedSteps(Staff staff)
@@ -320,11 +331,12 @@ namespace VRComposer
 
             if (payload.kind == DragKind.Symbol)
             {
-                if (payload.symbol == SymbolKind.TrebleClef || payload.symbol == SymbolKind.BassClef)
+                Clef dropClef;
+                if (Score.ClefOf(payload.symbol, out dropClef))
                 {
                     p.valid = true;
                     string key = "clef" + sz.staffIndex;
-                    if (key != lastKey) { lastKey = key; view.ClearOverlay(); view.SetReadout("Release to set the " + (payload.symbol == SymbolKind.TrebleClef ? "treble" : "bass") + " clef on " + sz.staff.name); }
+                    if (key != lastKey) { lastKey = key; view.ClearOverlay(); view.SetReadout("Release to set the " + dropClef.ToString().ToLower() + " clef on " + sz.staff.name); }
                     return;
                 }
                 // nearest note under the pointer
@@ -344,7 +356,7 @@ namespace VRComposer
                 {
                     lastKey = k2;
                     view.ShowTargetNote(best);
-                    view.SetReadout(best != null ? SymbolName(payload.symbol) + " on " + (best.isRest ? "rest" : Score.StepToName(sz.staff.clef, best.step, best.accidental)) : "Point at a note to add " + SymbolName(payload.symbol).ToLower());
+                    view.SetReadout(best != null ? SymbolName(payload.symbol) + " on " + (best.isRest ? "rest" : app.Score.NameOf(sz.staff.clef, best.step, best.accidental, best.natural)) : "Point at a note to add " + SymbolName(payload.symbol).ToLower());
                 }
                 return;
             }
@@ -379,22 +391,26 @@ namespace VRComposer
             if (keyStr == lastKey) return;
             lastKey = keyStr;
 
-            var notes = Realise(sz.staff, tick, step);
-            view.ShowNoteGhost(sz.staffIndex, notes, p.valid);
+            var notes = Realise(payload, sz.staff, tick, step);
+            Fit fit = Fit.None;
+            string why = null;
+            if (score.IsBeginner) fit = BeginnerKit.RateNotes(score, sz.staff, notes, payload.kind == DragKind.MoveNote ? payload.note : null, p.valid, out why);
+            view.ShowNoteGhost(sz.staffIndex, notes, p.valid, fit);
             int bar = tick / tpb + 1;
             float beat = (tick % tpb) / 4f + 1f;
-            string what = payload.IsRest ? "Rest" : payload.kind == DragKind.Motif ? BeginnerKit.Motifs[payload.motif].name + " from " + Score.StepToName(sz.staff.clef, step)
-                : Score.StepToName(sz.staff.clef, step, payload.kind == DragKind.MoveNote ? payload.note.accidental : 0);
-            view.SetReadout(what + "  ·  bar " + bar + ", beat " + beat.ToString(beat % 1f == 0f ? "0" : "0.##"));
+            string what = payload.IsRest ? "Rest" : payload.kind == DragKind.Motif ? BeginnerKit.Motifs[payload.motif].name + " from " + app.Score.NameOf(sz.staff.clef, step)
+                : app.Score.NameOf(sz.staff.clef, step, payload.kind == DragKind.MoveNote ? payload.note.accidental : 0);
+            string fitText = fit == Fit.None ? "" : "   " + BeginnerKit.FitLabel(fit) + (string.IsNullOrEmpty(why) ? "" : ": " + why);
+            view.SetReadout(what + "  ·  bar " + bar + ", beat " + beat.ToString(beat % 1f == 0f ? "0" : "0.##") + fitText);
             UIFactory.Buzz(lastEvent, 0.15f, 0.015f);
-            if (!payload.IsRest && payload.kind != DragKind.Motif) app.Player.PreviewNote(sz.staff.program, Score.StepToMidi(sz.staff.clef, step, payload.kind == DragKind.MoveNote ? payload.note.accidental : 0), 0.22f);
+            if (!payload.IsRest && payload.kind != DragKind.Motif) app.Player.PreviewNote(sz.staff.program, app.Score.MidiOf(sz.staff.clef, step, payload.kind == DragKind.MoveNote ? payload.note.accidental : 0), 0.22f);
         }
 
         private void ComputeChord(ScoreView view, Vector2 local, ref Pending p)
         {
             var score = App.Score;
             int tpb = score.TicksPerBar;
-            float rel = (local.x - ScoreView.X0) / view.BarW;
+            float rel = (local.x - view.X0) / view.BarW;
             int barInPage = Mathf.Clamp(Mathf.FloorToInt(rel), 0, view.BarsPerPage - 1);
             bool secondHalf = rel - barInPage >= 0.5f && tpb % 2 == 0;
             // sticky on half-bar cells
@@ -411,12 +427,16 @@ namespace VRComposer
             string key = "c" + p.tick + "_" + p.length;
             if (key == lastKey) return;
             lastKey = key;
-            view.ShowChordGhost(p.tick, p.length, BeginnerKit.ChordName(score.Key, deg), BeginnerKit.ChordRoman(score.Key, deg));
-            view.SetReadout(BeginnerKit.ChordName(score.Key, deg) + "  ·  bar " + (bar + 1) + (secondHalf ? ", second half" : ""));
+            Fit cfit = Fit.None;
+            string cwhy = null;
+            if (score.IsBeginner) cfit = BeginnerKit.RateChord(score, deg, p.tick, p.length, out cwhy);
+            view.ShowChordGhost(p.tick, p.length, BeginnerKit.ChordName(score.Key, deg), BeginnerKit.ChordRoman(score.Key, deg), cfit);
+            view.SetReadout(BeginnerKit.ChordName(score.Key, deg) + "  ·  bar " + (bar + 1) + (secondHalf ? ", second half" : "")
+                + (cfit == Fit.None ? "" : "   " + BeginnerKit.FitLabel(cfit) + ": " + cwhy));
             UIFactory.Buzz(lastEvent, 0.15f, 0.015f);
         }
 
-        private List<Note> Realise(Staff staff, int tick, int step)
+        private List<Note> Realise(DragPayload payload, Staff staff, int tick, int step)
         {
             var app = App;
             switch (payload.kind)
@@ -444,14 +464,10 @@ namespace VRComposer
             app.View.ClearOverlay();
             app.View.RestoreReadout();
 
-            // Use what was shown ~80 ms before release: releasing the trigger jerks the ray.
-            Pending chosen = default(Pending);
-            bool have = false;
-            float cutoff = Time.unscaledTime - 0.08f;
-            for (int i = history.Count - 1; i >= 0; i--)
-                if (history[i].time <= cutoff) { chosen = history[i]; have = true; break; }
-            if (!have && history.Count > 0) { chosen = history[0]; have = true; }
+            Pending chosen;
+            bool have = ChooseDrop(out chosen);
             history.Clear();
+            Debug.Log("[VRComposer] Drop " + p.kind + ": " + (have ? (chosen.zone != null ? chosen.zone.GetType().Name : "outside") + (chosen.valid ? " tick " + chosen.tick + " step " + chosen.step : " (not placeable)") : "no position"));
 
             bool moving = p.kind == DragKind.MoveNote || p.kind == DragKind.MoveChord;
             if (!have || chosen.zone == null || chosen.zone is BinZone)
@@ -467,13 +483,61 @@ namespace VRComposer
                 var sz = (StaffZone)chosen.zone;
                 if (p.kind == DragKind.Symbol) { app.ApplySymbol(sz.staff, chosen.target, p.symbol); return; }
                 if (p.kind == DragKind.MoveNote) { app.MoveNote(p.fromStaff, p.note, sz.staff, chosen.tick, chosen.step); return; }
-                app.DropOnStaff(sz.staff, Realise(sz.staff, chosen.tick, chosen.step), p);
+                app.DropOnStaff(sz.staff, Realise(p, sz.staff, chosen.tick, chosen.step), p);
             }
             else if (chosen.zone is ChordLaneZone)
             {
                 if (p.kind == DragKind.MoveChord) app.MoveChord(p.chord, chosen.tick, chosen.length);
                 else app.DropChord(p.chordDegree, chosen.tick, chosen.length);
             }
+        }
+
+        /// <summary>
+        /// Where the item lands: the target the ghost showed. Releasing the trigger jerks the ray, so
+        /// a target that changed in the last 80 ms is ignored, and if the ray slipped off the stave in
+        /// the last 300 ms the drop still goes where the ghost was.
+        /// </summary>
+        private bool ChooseDrop(out Pending chosen)
+        {
+            chosen = default(Pending);
+            if (history.Count == 0) return false;
+            float now = Time.unscaledTime;
+            var last = history[history.Count - 1];
+
+            // most recent entry that was on a drop zone (and placeable)
+            int lastOn = -1;
+            for (int i = history.Count - 1; i >= 0; i--)
+                if (history[i].zone != null && !(history[i].zone is BinZone) && history[i].valid) { lastOn = i; break; }
+
+            if (last.zone == null || last.zone is BinZone)
+            {
+                // off the score now: count it as on the score if it only just slipped off
+                if (lastOn >= 0 && last.zone == null)
+                {
+                    float leftAt = history[Mathf.Min(lastOn + 1, history.Count - 1)].time;
+                    if (now - leftAt <= 0.3f) { chosen = history[lastOn]; return true; }
+                }
+                chosen = last;
+                return true;
+            }
+
+            // on a zone: undo a last-instant jump caused by the trigger pull
+            chosen = last;
+            for (int i = history.Count - 2; i >= 0; i--)
+            {
+                var h = history[i];
+                if (h.zone != last.zone || !h.valid) break;
+                if (Same(h, last)) continue;
+                if (now - history[i + 1].time <= 0.08f) chosen = h;
+                break;
+            }
+            if (!chosen.valid && lastOn >= 0 && now - history[lastOn].time <= 0.3f) chosen = history[lastOn];
+            return true;
+        }
+
+        private static bool Same(Pending a, Pending b)
+        {
+            return a.zone == b.zone && a.tick == b.tick && a.step == b.step && a.length == b.length && a.target == b.target && a.staffIndex == b.staffIndex;
         }
 
         public void OnPointerClick(PointerEventData e)
@@ -487,9 +551,16 @@ namespace VRComposer
         {
             switch (k)
             {
-                case SymbolKind.Piano: return "Piano (soft)";
-                case SymbolKind.Forte: return "Forte (loud)";
+                case SymbolKind.Tie: return "Tie";
+                case SymbolKind.Fermata: return "Fermata";
+                case SymbolKind.Pianissimo: return "pp (v. soft)";
+                case SymbolKind.Piano: return "p (soft)";
+                case SymbolKind.Forte: return "f (loud)";
+                case SymbolKind.Fortissimo: return "ff (v. loud)";
+                case SymbolKind.Sforzando: return "sf (accent)";
+                case SymbolKind.Crescendo: return "Cresc.";
                 case SymbolKind.TrebleClef: return "Treble clef";
+                case SymbolKind.AltoClef: return "Alto clef";
                 case SymbolKind.BassClef: return "Bass clef";
                 default: return k.ToString();
             }
@@ -514,7 +585,7 @@ namespace VRComposer
         public void OnPointerEnter(PointerEventData e)
         {
             string text = note.isRest ? Durations.Name(note.duration, true) + "  ·  drag to move, tap to select"
-                : Score.StepToName(zone.staff.clef, note.step, note.accidental) + " " + Durations.Name(note.duration, false).ToLower() + "  ·  drag to move, tap to select";
+                : VRComposerApp.Instance.Score.NameOf(zone.staff.clef, note.step, note.accidental, note.natural) + " " + Durations.Name(note.duration, false).ToLower() + "  ·  drag to move, tap to select";
             zone.view.SetHover(note, text);
             UIFactory.Buzz(e, 0.08f, 0.01f);
         }

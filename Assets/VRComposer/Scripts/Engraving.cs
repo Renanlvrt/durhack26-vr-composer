@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -77,10 +78,30 @@ namespace VRComposer
                 case SymbolKind.Dot: return "augmentationDot";
                 case SymbolKind.Staccato: return "articStaccatoAbove";
                 case SymbolKind.Accent: return "articAccentAbove";
+                case SymbolKind.Tie: return "tieArc";
+                case SymbolKind.Fermata: return "fermataAbove";
+                case SymbolKind.Pianissimo: return "dynamicPP";
                 case SymbolKind.Piano: return "dynamicPiano";
                 case SymbolKind.Forte: return "dynamicForte";
+                case SymbolKind.Fortissimo: return "dynamicFF";
+                case SymbolKind.Sforzando: return "dynamicSforzando1";
+                case SymbolKind.Crescendo: return null;          // drawn as the word "cresc."
                 case SymbolKind.TrebleClef: return "gClef";
-                default: return "fClef";
+                case SymbolKind.AltoClef: return "cClef";
+                case SymbolKind.BassClef: return "fClef";
+                default: return null;
+            }
+        }
+
+        public static string Dynamic(int level)
+        {
+            switch (level)
+            {
+                case -2: return "dynamicPP";
+                case -1: return "dynamicPiano";
+                case 1: return "dynamicForte";
+                case 2: return "dynamicFF";
+                default: return null;
             }
         }
     }
@@ -211,13 +232,84 @@ namespace VRComposer
                 GlyphCentred(r, g, 0, cy * ls, ls, c);
                 if (up) lowest = Mathf.Min(lowest, cy - 0.6f);
             }
-            if (n.dynamic != 0)
+            float stemTop = up && n.duration != Duration.Whole ? Mathf.Max(3.5f, Mathf.Abs(4 - n.step) * 0.5f) : 0.6f;
+            if (n.fermata)
             {
-                string g = n.dynamic > 0 ? "dynamicForte" : "dynamicPiano";
-                float staffBottom = -n.step * 0.5f;                       // bottom line relative to the head
-                float cyDyn = Mathf.Min(staffBottom - 2.3f, lowest - 1.3f);
-                GlyphCentred(r, g, 0, cyDyn * ls, ls, c);
+                float staffTop = (8 - n.step) * 0.5f;
+                Fermata(r, Mathf.Max(staffTop + 0.9f, stemTop + 0.5f) * ls, ls, c);
             }
+            Dynamics(r, n, Mathf.Min(-n.step * 0.5f - 2.3f, lowest - 1.3f) * ls, ls, c);
+        }
+
+        /// <summary>Palette / drag icon for a symbol, centred on (0, 0).</summary>
+        public static void SymbolIcon(Transform r, SymbolKind k, float ls, Color c)
+        {
+            if (k == SymbolKind.Tie)
+            {
+                var head = Smufl.G("noteheadBlack");
+                GlyphCentred(r, "noteheadBlack", -1.3f * ls, 0, ls, c);
+                GlyphCentred(r, "noteheadBlack", 1.3f * ls, 0, ls, c);
+                var t = Tie(r, 0, 0, 0, false, ls, c);
+                var rt = t.rectTransform;
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+                rt.sizeDelta = new Vector2(2.4f * ls, 0.7f * ls);
+                rt.anchoredPosition = new Vector2(-1.2f * ls, -0.6f * ls);
+                return;
+            }
+            string g = Glyphs.Symbol(k);
+            if (g != null) { GlyphCentred(r, g, 0, 0, ls, c); return; }
+            var txt = UIFactory.Text(r, k == SymbolKind.Crescendo ? "cresc." : k.ToString(), 1.6f * ls, c, TextAlignmentOptions.Center, FontStyles.Italic);
+            var tr = txt.rectTransform;
+            tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
+            tr.sizeDelta = new Vector2(6f * ls, 2f * ls);
+            tr.anchoredPosition = Vector2.zero;
+        }
+
+        /// <summary>Fermata centred over x = 0, its base at y.</summary>
+        public static void Fermata(Transform r, float y, float ls, Color c)
+        {
+            var g = Smufl.G("fermataAbove");
+            Glyph(r, "fermataAbove", -g.Centre.x * ls, y, ls, c);
+        }
+
+        /// <summary>Dynamic, sf and "cresc."/"dim." under the note, centred on the line y.</summary>
+        public static void Dynamics(Transform r, Note n, float y, float ls, Color c)
+        {
+            float x = 0;
+            string d = Glyphs.Dynamic(n.dynamic);
+            if (d != null) { var g = Smufl.G(d); GlyphCentred(r, d, 0, y, ls, c); x = g.Size.x * 0.5f * ls + 0.4f * ls; }
+            if (n.sforzando)
+            {
+                var g = Smufl.G("dynamicSforzando1");
+                float cx = d != null ? x + g.Size.x * 0.5f * ls : 0;
+                GlyphCentred(r, "dynamicSforzando1", cx, y, ls, c);
+                x = cx + g.Size.x * 0.5f * ls + 0.4f * ls;
+            }
+            if (n.hairpin != 0)
+            {
+                var t = UIFactory.Text(r, n.hairpin > 0 ? "cresc." : "dim.", 1.25f * ls, c, TextAlignmentOptions.Left, FontStyles.Italic);
+                t.name = "Cresc";
+                var rt = t.rectTransform;
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+                rt.pivot = new Vector2(0f, 0.5f);
+                rt.anchoredPosition = new Vector2(x > 0 ? x : -0.6f * ls, y);
+                rt.sizeDelta = new Vector2(5f * ls, 1.6f * ls);
+            }
+        }
+
+        /// <summary>A tie arc from x0 to x1 (parent-local px); its ends at y, bulging up or down.</summary>
+        public static Image Tie(Transform r, float x0, float x1, float y, bool above, float ls, Color c)
+        {
+            float w = Mathf.Max(0.8f * ls, x1 - x0);
+            float h = Mathf.Clamp(w * 0.18f, 0.45f * ls, 0.85f * ls);
+            var img = UIFactory.Img(r, "Tie", c, Glyphs.Get("tieArc"));
+            var rt = img.rectTransform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 0f);
+            rt.sizeDelta = new Vector2(w, h);
+            rt.anchoredPosition = new Vector2(x0, y);
+            if (!above) rt.localScale = new Vector3(1f, -1f, 1f);
+            return img;
         }
 
         /// <summary>Rest; the parent's origin is the bottom stave line at the rest's x.</summary>
@@ -228,6 +320,8 @@ namespace VRComposer
             var gg = Smufl.G(g);
             Glyph(r, g, -gg.Centre.x * ls, originLine * ls, ls, c);
             if (n.dotted) Glyph(r, "augmentationDot", (gg.Size.x / 2f + 0.3f) * ls, 2.5f * ls, ls, c);
+            if (n.fermata) Fermata(r, 4.9f * ls, ls, c);
+            Dynamics(r, n, -2.3f * ls, ls, c);
         }
 
         public static void Recolour(GameObject go, Color c)

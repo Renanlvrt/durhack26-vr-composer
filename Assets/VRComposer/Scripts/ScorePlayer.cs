@@ -35,10 +35,19 @@ namespace VRComposer
         public bool IsPlaying { get { return playing; } }
         public string LastError { get; private set; }
 
-        /// <summary>Current playback position in quarter-note beats.</summary>
+        /// <summary>Current playback position in quarter-note beats of the score (a fermata's extra
+        /// time is taken out, so the playhead waits on the held note instead of running ahead).</summary>
         public float PositionBeats
         {
-            get { lock (gate) { return samplesPerBeat > 0 ? (float)(samplePos / samplesPerBeat) : 0f; } }
+            get
+            {
+                lock (gate)
+                {
+                    if (samplesPerBeat <= 0) return 0f;
+                    float perf = (float)(samplePos / samplesPerBeat);
+                    return timeMap != null ? timeMap.Ticks(perf) / 4f : perf;
+                }
+            }
         }
 
         /// <summary>Raised on the main thread when a non-looping playback reaches the end.</summary>
@@ -73,6 +82,7 @@ namespace VRComposer
         private long samplePos;
         private long endSample;
         private double samplesPerBeat;
+        private TimeMap timeMap;        // score ticks <-> performed beats (fermatas)
         private volatile bool playing;
         private volatile bool finishedFlag;
         private int[] channelPrograms = new int[16];
@@ -149,6 +159,12 @@ namespace VRComposer
             {
                 synth = task.Result;
                 for (int ch = 0; ch < 16; ch++) channelPrograms[ch] = -1;
+                // Instruments are balanced with channel volume around Instruments.BaseVolume (85)
+                // instead of the GM default 100, so quiet ones (piano) can be raised. The master
+                // volume makes up the difference so the overall level is unchanged.
+                float k = 100f / Instruments.BaseVolume;
+                synth.MasterVolume *= k * k;
+                for (int ch = 0; ch < 16; ch++) synth.ProcessMidiMessage(ch, 0xB0, 7, Instruments.BaseVolume);
             }
             IsReady = true;
             source.Play();
@@ -159,12 +175,13 @@ namespace VRComposer
         public void Play()
         {
             if (!IsReady || score == null) return;
-            var built = BuildEvents(out long end, out double spb);
+            var built = BuildEvents(out long end, out double spb, out TimeMap map);
             lock (gate)
             {
                 events = built;
                 endSample = end;
                 samplesPerBeat = spb;
+                timeMap = map;
                 samplePos = 0;
                 evIndex = 0;
                 ApplyProgramsLocked();
@@ -200,6 +217,7 @@ namespace VRComposer
                 {
                     synth.ProcessMidiMessage(PreviewChannel, 0xC0, program, 0);
                     synth.ProcessMidiMessage(PreviewChannel, 0xB0, 91, reverb);
+                    synth.ProcessMidiMessage(PreviewChannel, 0xB0, 7, Instruments.VolumeFor(program));
                     channelPrograms[PreviewChannel] = program;
                 }
                 synth.NoteOn(PreviewChannel, key, 90);
@@ -233,14 +251,17 @@ namespace VRComposer
             if (!playing) return;
 
             // Live edit while playing: rebuild, keep the musical position.
-            var built = BuildEvents(out long end, out double spb);
+            var built = BuildEvents(out long end, out double spb, out TimeMap map);
             lock (gate)
             {
+                // resume at the same place in the score (ticks), even if fermatas moved
                 double beat = samplesPerBeat > 0 ? samplePos / samplesPerBeat : 0;
+                double tick = timeMap != null ? timeMap.Ticks((float)beat) : beat * 4;
                 events = built;
                 endSample = end;
                 samplesPerBeat = spb;
-                samplePos = (long)(beat * spb);
+                timeMap = map;
+                samplePos = (long)(map.Beats((float)tick) * spb);
                 if (samplePos >= endSample) samplePos = 0;
                 evIndex = 0;
                 while (evIndex < events.Count && events[evIndex].sample < samplePos) evIndex++;
@@ -249,37 +270,26 @@ namespace VRComposer
             }
         }
 
-        private void Add(List<Ev> list, double spb, float startBeat, float endBeat, int ch, int key, int vel, int staff)
+        /// <summary>Adds a note-on/off pair. Times are score ticks, mapped through the fermata map.</summary>
+        private void Add(List<Ev> list, double spb, TimeMap map, float startTick, float endTick, int ch, int key, int vel, int staff)
         {
-            if (key < 0 || key > 127 || endBeat <= startBeat) return;
-            list.Add(new Ev { sample = (long)(startBeat * spb), channel = ch, key = key, velocity = vel, on = true, staff = staff, seconds = (float)((endBeat - startBeat) * spb / sampleRate) });
-            list.Add(new Ev { sample = (long)(endBeat * spb), channel = ch, key = key, on = false, staff = staff });
+            if (key < 0 || key > 127 || endTick <= startTick) return;
+            double a = map.Beats(startTick) * spb, b = map.Beats(endTick) * spb;
+            list.Add(new Ev { sample = (long)a, channel = ch, key = key, velocity = vel, on = true, staff = staff, seconds = (float)((b - a) / sampleRate) });
+            list.Add(new Ev { sample = (long)b, channel = ch, key = key, on = false, staff = staff });
         }
 
-        private List<Ev> BuildEvents(out long end, out double spb)
+        private List<Ev> BuildEvents(out long end, out double spb, out TimeMap map)
         {
             spb = sampleRate * 60.0 / Mathf.Max(1, score.tempoBpm);   // samples per quarter-note beat
             int totalTicks = score.TotalTicks;
-            end = (long)(totalTicks / 4.0 * spb);
+            map = new TimeMap(score);
+            end = (long)(map.TotalBeats * spb);
 
             var list = new List<Ev>();
-            for (int s = 0; s < score.staves.Count; s++)
-            {
-                var staff = score.staves[s];
-                int ch = ChannelForStaff(s);
-                foreach (var n in staff.notes)
-                {
-                    if (n.isRest || n.tick >= totalTicks) continue;
-                    int key = Score.StepToMidi(staff.clef, n.step, n.accidental);
-                    float start = n.tick / 4f;
-                    float len = Mathf.Min(n.End, totalTicks) / 4f - start;
-                    if (n.staccato) len *= 0.5f;
-                    float gap = Mathf.Min(0.05f, len * 0.1f);           // tiny gap so repeated notes re-articulate
-                    int vel = n.dynamic < 0 ? 60 : n.dynamic > 0 ? 112 : 90;
-                    if (n.accent) vel = Mathf.Min(127, vel + 22);
-                    Add(list, spb, start, start + len - gap, ch, key, vel, s);
-                }
-            }
+            // ties, carried dynamics, cresc., sf, staccato, accents: see Performance.Realize
+            foreach (var p in Performance.Realize(score))
+                Add(list, spb, map, p.startTick, p.endTick, ChannelForStaff(p.staff), p.midi, p.velocity, p.staff);
 
             if (score.backingChords)
             {
@@ -289,12 +299,12 @@ namespace VRComposer
                     if (c.tick >= totalTicks) continue;
                     int bass;
                     var tones = BeginnerKit.ChordMidi(k, c.degree, out bass);
-                    float a = c.tick / 4f, b = Mathf.Min(c.End, totalTicks) / 4f;
-                    foreach (var t in tones) Add(list, spb, a, b - 0.03f, ChordChannel, t, 52, -1);
+                    float a = c.tick, b = Mathf.Min(c.End, totalTicks);
+                    foreach (var t in tones) Add(list, spb, map, a, b - 0.12f, ChordChannel, t, 52, -1);
                     // bass: root on every half bar (beats 1 and 3 in 4/4)
                     int half = Mathf.Max(4, score.TicksPerBar / 2);
                     for (int t = c.tick; t < Mathf.Min(c.End, totalTicks); t += half)
-                        Add(list, spb, t / 4f, Mathf.Min(t + half, c.End) / 4f - 0.08f, BassChannel, bass, 80, -1);
+                        Add(list, spb, map, t, Mathf.Min(t + half, c.End) - 0.32f, BassChannel, bass, 80, -1);
                 }
             }
 
@@ -307,12 +317,12 @@ namespace VRComposer
                     int bt = bar * tpb;
                     for (int t = 0; t < tpb; t += 2)
                     {
-                        float beat = (bt + t) / 4f;
-                        Add(list, spb, beat, beat + 0.1f, DrumChannel, 42, t % 4 == 0 ? 70 : 50, -1);          // closed hi-hat
+                        float tk = bt + t;
+                        Add(list, spb, map, tk, tk + 0.4f, DrumChannel, 42, t % 4 == 0 ? 70 : 50, -1);          // closed hi-hat
                         bool kick = t == 0 || (!compound && tpb >= 16 && t == tpb / 2);
                         bool snare = compound ? t == tpb / 2 : (t % 8 == 4);
-                        if (kick) Add(list, spb, beat, beat + 0.2f, DrumChannel, 36, 100, -1);
-                        if (snare) Add(list, spb, beat, beat + 0.2f, DrumChannel, 38, 85, -1);
+                        if (kick) Add(list, spb, map, tk, tk + 0.8f, DrumChannel, 36, 100, -1);
+                        if (snare) Add(list, spb, map, tk, tk + 0.8f, DrumChannel, 38, 85, -1);
                     }
                 }
             }
@@ -332,6 +342,7 @@ namespace VRComposer
                 if (channelPrograms[ch] == program) continue;
                 synth.ProcessMidiMessage(ch, 0xC0, program, 0);
                 synth.ProcessMidiMessage(ch, 0xB0, 91, reverb);
+                synth.ProcessMidiMessage(ch, 0xB0, 7, Instruments.VolumeFor(program));   // loudness balance
                 channelPrograms[ch] = program;
             }
             SetProgramLocked(ChordChannel, chordProgram);

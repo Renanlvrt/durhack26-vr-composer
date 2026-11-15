@@ -40,7 +40,9 @@ namespace VRComposer
         public const float HeaderH = 66f;
         public const float RowH = 9.5f * LS;
         public const float LaneH = 72f;
-        public const float X0 = 210f;           // first bar starts here
+        /// <summary>Where the first bar starts: after the clef, the key signature and the time signature.</summary>
+        public float X0 { get { return 210f + KeySigWidth; } }
+        public float KeySigWidth { get { int n = Mathf.Abs(app.Score.keySignature); return n == 0 ? 0f : n * 0.95f * LS + 0.6f * LS; } }
         public const float RightPad = 24f;
         public const float BarPad = 0.9f * LS;
         public const float StaffLeft = 100f;
@@ -61,7 +63,8 @@ namespace VRComposer
         private string idleReadout = "";
 
         public float Height { get { return HeaderH + Mathf.Max(1, app.Score.staves.Count) * RowH + LaneH + 20f; } }
-        public int BarsPerPage { get { return Mathf.Min(app.Score.bars, app.Score.IsBeginner ? 4 : 2); } }
+        // Advanced: 32 sixteenths per page (2 bars of 4/4, 4 bars of 2/4) so 16ths keep their room
+        public int BarsPerPage { get { return Mathf.Min(app.Score.bars, app.Score.IsBeginner ? 4 : Mathf.Max(2, 32 / Mathf.Max(1, app.Score.TicksPerBar))); } }
         public int Unit { get { return app.Score.IsBeginner ? 2 : 1; } }      // ticks per horizontal slot
         public float BarW { get { return (Width - X0 - RightPad) / BarsPerPage; } }
         public int SlotsPerBar { get { return Mathf.Max(1, app.Score.TicksPerBar / Unit); } }
@@ -150,7 +153,7 @@ namespace VRComposer
             if (pageStart >= score.bars || pageStart % Mathf.Max(1, BarsPerPage) != 0) pageStart = 0;
 
             root.sizeDelta = new Vector2(Width, Height);
-            string keyText = score.IsBeginner ? score.Key.name + " pentatonic" : score.Key.name;
+            string keyText = score.IsBeginner ? score.Key.name + " pentatonic" : Score.KeySignatureName(score.keySignature);
             header.text = "Your score  ·  " + score.timeSigNumerator + "/" + score.timeSigDenominator + "  ·  " + keyText + "  ·  " + score.tempoBpm + " bpm";
             bool paged = PageCount > 1;
             prevPage.gameObject.SetActive(paged);
@@ -208,7 +211,14 @@ namespace VRComposer
 
             // clef and time signature
             if (staff.clef == Clef.Treble) RowGlyph(row, "gClef", StaffLeft + 0.6f * LS, StepY(2), ink);
+            else if (staff.clef == Clef.Alto) RowGlyph(row, "cClef", StaffLeft + 0.6f * LS, StepY(4), ink);
             else RowGlyph(row, "fClef", StaffLeft + 0.6f * LS, StepY(6), ink);
+            // key signature: flats B E A D G C F / sharps F C G D A E B at their usual heights
+            int ks = score.keySignature;
+            int[] treblePos = ks < 0 ? FlatSteps : SharpSteps;
+            int shift = staff.clef == Clef.Bass ? -2 : staff.clef == Clef.Alto ? -1 : 0;
+            for (int i = 0; i < Mathf.Abs(ks) && i < 7; i++)
+                RowGlyph(row, ks < 0 ? "accidentalFlat" : "accidentalSharp", 174f + i * 0.95f * LS, StepY(treblePos[i] + shift), ink);
             RowGlyphCentred(row, "timeSig" + Mathf.Clamp(score.timeSigNumerator, 0, 9), X0 - 1.6f * LS, StepY(6), ink);
             RowGlyphCentred(row, "timeSig" + Mathf.Clamp(score.timeSigDenominator, 0, 9), X0 - 1.6f * LS, StepY(2), ink);
 
@@ -240,6 +250,7 @@ namespace VRComposer
                 if (!OnPage(n.tick)) continue;
                 BuildNote(row, zone, n, ink);
             }
+            BuildTies(row, score, staff, ink);
 
             // playhead
             var ph = UIFactory.Img(row, "Playhead", UIFactory.Orange);
@@ -248,11 +259,37 @@ namespace VRComposer
             playheads.Add(ph.rectTransform);
         }
 
+        private static readonly int[] FlatSteps = { 4, 7, 3, 6, 2, 5, 1 };    // treble: B4 E5 A4 D5 G4 C5 F4
+        private static readonly int[] SharpSteps = { 8, 5, 9, 6, 3, 7, 4 };   // treble: F5 C5 G5 D5 A4 E5 B4
+
+        /// <summary>Tie arcs: to the next note of the same pitch, or to the page edge when it is on the next page.</summary>
+        private void BuildTies(RectTransform row, Score score, Staff staff, Color ink)
+        {
+            int first = pageStart * score.TicksPerBar, last = Mathf.Min(score.bars, pageStart + BarsPerPage) * score.TicksPerBar;
+            float pageLeft = X0 + 0.3f * LS, pageRight = X0 + BarsPerPage * BarW - 0.3f * LS;
+            foreach (var n in staff.notes)
+            {
+                if (n.isRest || !n.tie) continue;
+                Note next = null;
+                int midi = score.MidiOf(staff, n);
+                foreach (var m in staff.notes)
+                    if (!m.isRest && m.tick == n.End && score.MidiOf(staff, m) == midi) { next = m; break; }
+                if (next == null) continue;
+                bool startHere = n.tick >= first && n.tick < last, endHere = next.tick >= first && next.tick < last;
+                if (!startHere && !endHere) continue;
+                bool above = n.step >= 4;                      // opposite the stem
+                float y = StepY(n.step) + (above ? 0.55f : -0.55f) * LS;
+                float x0 = startHere ? TickX(n.tick) + 0.75f * LS : pageLeft;
+                float x1 = endHere ? TickX(next.tick) - 0.75f * LS : pageRight;
+                Engraver.Tie(row, x0, x1, y, above, LS, ink);
+            }
+        }
+
         private void BuildNote(RectTransform row, StaffZone zone, Note n, Color ink)
         {
             float x = TickX(n.tick);
             float y = n.isRest ? BottomLineY : StepY(n.step);
-            var c = Engraver.Container(row, n.isRest ? "Rest" : "Note " + Score.StepToName(zone.staff.clef, n.step, n.accidental), new Vector2(x, y));
+            var c = Engraver.Container(row, n.isRest ? "Rest" : "Note " + app.Score.NameOf(zone.staff.clef, n.step, n.accidental, n.natural), new Vector2(x, y));
 
             var halo = UIFactory.Img(c, "Halo", new Color(0, 0, 0, 0), UIFactory.Rounded);
             var hr = halo.rectTransform;
@@ -357,21 +394,47 @@ namespace VRComposer
         private RectTransform RowRect(int staffIndex) { return zones[staffIndex].transform as RectTransform; }
 
         /// <summary>Ghost notes plus a soft column and a short pitch marker: the only grid ever shown.</summary>
-        public void ShowNoteGhost(int staffIndex, List<Note> notes, bool valid)
+        /// <param name="fit">Beginner only: colours the target box green / yellow / red. None = orange (Advanced).</param>
+        public void ShowNoteGhost(int staffIndex, List<Note> notes, bool valid, Fit fit = Fit.None)
         {
             ClearOverlay();
             if (staffIndex < 0 || staffIndex >= zones.Count) return;
             var row = RowRect(staffIndex);
-            Color col = valid ? new Color(UIFactory.Orange.r, UIFactory.Orange.g, UIFactory.Orange.b, 0.9f) : new Color(UIFactory.Red.r, UIFactory.Red.g, UIFactory.Red.b, 0.75f);
+            Color baseCol = fit != Fit.None ? BeginnerKit.FitColour(fit) : valid ? UIFactory.Orange : UIFactory.Red;
+            Color col = new Color(baseCol.r * 0.85f, baseCol.g * 0.85f, baseCol.b * 0.85f, valid ? 0.95f : 0.75f);
 
             if (notes.Count > 0)
             {
-                // soft column over the time the notes cover
+                // the target box over the time the notes cover (soft in Advanced, coloured in Beginner)
                 int a = notes[0].tick, b = notes[notes.Count - 1].End;
-                float x0 = TickX(a) - SlotW * 0.5f, x1 = TickX(b - 1) + SlotW * 0.5f;
-                var colImg = UIFactory.Img(row, "Snap column", new Color(UIFactory.Orange.r, UIFactory.Orange.g, UIFactory.Orange.b, 0.07f), UIFactory.Rounded);
-                UIFactory.PlaceTopLeft(colImg.rectTransform, x0, StepY(10), Mathf.Max(8f, x1 - x0), 6f * LS);
-                overlayItems.Add(colImg.gameObject);
+                float x0 = TickX(a) - SlotW * 0.5f - 4f, x1 = TickX(b - 1) + SlotW * 0.5f + 4f;
+                float w = Mathf.Max(1.6f * LS, x1 - x0);
+                if (fit != Fit.None)
+                {
+                    Color ec = new Color(baseCol.r, baseCol.g, baseCol.b, 0.95f);
+                    float top = StepY(11), h = 7f * LS, t = 4f;
+                    var frame = new[] { new Vector4(x0 - t, top + t, w + 2 * t, t), new Vector4(x0 - t, top - h, w + 2 * t, t),
+                                        new Vector4(x0 - t, top, t, h), new Vector4(x0 + w, top, t, h) };
+                    foreach (var f in frame)
+                    {
+                        var edge = UIFactory.Img(row, "Fit box edge", ec);
+                        UIFactory.PlaceTopLeft(edge.rectTransform, f.x, f.y, f.z, f.w);
+                        overlayItems.Add(edge.gameObject);
+                    }
+                    // see-through fill: the stave lines and any notes already there stay visible
+                    var fill = UIFactory.Img(row, "Fit box", new Color(1f, 1f, 1f, 0.3f), UIFactory.Rounded);
+                    UIFactory.PlaceTopLeft(fill.rectTransform, x0, StepY(11), w, 7f * LS);
+                    overlayItems.Add(fill.gameObject);
+                    var tint = UIFactory.Img(row, "Fit tint", new Color(baseCol.r, baseCol.g, baseCol.b, 0.28f), UIFactory.Rounded);
+                    UIFactory.PlaceTopLeft(tint.rectTransform, x0, StepY(11), w, 7f * LS);
+                    overlayItems.Add(tint.gameObject);
+                }
+                else
+                {
+                    var colImg = UIFactory.Img(row, "Snap column", new Color(UIFactory.Orange.r, UIFactory.Orange.g, UIFactory.Orange.b, 0.07f), UIFactory.Rounded);
+                    UIFactory.PlaceTopLeft(colImg.rectTransform, x0, StepY(10), w, 6f * LS);
+                    overlayItems.Add(colImg.gameObject);
+                }
             }
 
             foreach (var n in notes)
@@ -380,7 +443,7 @@ namespace VRComposer
                 {
                     // short pitch marker on the target line/space
                     bool onLine = Score.Mod(n.step, 2) == 0;
-                    var mark = UIFactory.Img(row, "Pitch marker", new Color(UIFactory.Orange.r, UIFactory.Orange.g, UIFactory.Orange.b, onLine ? 0.55f : 0.18f), onLine ? null : UIFactory.Rounded);
+                    var mark = UIFactory.Img(row, "Pitch marker", new Color(baseCol.r, baseCol.g, baseCol.b, onLine ? 0.6f : 0.22f), onLine ? null : UIFactory.Rounded);
                     float w = 3.4f * LS;
                     UIFactory.PlaceTopLeft(mark.rectTransform, TickX(n.tick) - w / 2f, StepY(n.step), w, onLine ? 3f : LS * 0.9f, new Vector2(0f, 0.5f));
                     overlayItems.Add(mark.gameObject);
@@ -391,10 +454,11 @@ namespace VRComposer
             }
         }
 
-        public void ShowChordGhost(int tick, int len, string name, string roman)
+        public void ShowChordGhost(int tick, int len, string name, string roman, Fit fit = Fit.None)
         {
             ClearOverlay();
-            var img = ChordTile(lane, tick, len, name, roman, new Color(UIFactory.Orange.r, UIFactory.Orange.g, UIFactory.Orange.b, 0.85f), false);
+            Color c = BeginnerKit.FitColour(fit);
+            var img = ChordTile(lane, tick, len, name, roman, new Color(c.r, c.g, c.b, 0.88f), false);
             overlayItems.Add(img.gameObject);
         }
 
