@@ -57,6 +57,7 @@ namespace VRComposer
         private bool held;                 // the wheel's button is down (twisting)
         private float awaitingUntil;       // a sub-ring stays open this long waiting for the next hold
         private Vector3 anchorUp, openUp;
+        private float stickRepeatAt;
         private float lastStep;
         private int stickDirWas;
 
@@ -158,8 +159,10 @@ namespace VRComposer
         {
             if (hover.Hovering) { hover.BeginHover(Payload()); }
             lockDirty = true;
-            app.RebuildPalette();
+            paletteDirty = true;   // rebuilt in LateUpdate, once no drag is running
         }
+
+        private bool paletteDirty;
 
         private void ClearStyle() { style.accidental = 0; style.natural = style.staccato = style.accent = style.tie = false; }
 
@@ -585,8 +588,8 @@ namespace VRComposer
         {
             if (DesktopActive) return null;
             // cached: GameObject.Find walks the whole scene and this runs every frame a wheel is open
-            if (w == noteWheel) { if (leftHand == null) leftHand = VRComposerApp.FindLeftHand(); return leftHand; }
-            if (rightHand == null) rightHand = VRComposerApp.FindRightHand();
+            if (w == noteWheel) { if (leftHand == null || !leftHand.gameObject.activeInHierarchy) leftHand = VRComposerApp.FindLeftHand(); return leftHand; }
+            if (rightHand == null || !rightHand.gameObject.activeInHierarchy) rightHand = VRComposerApp.FindRightHand();
             return rightHand;
         }
 
@@ -611,6 +614,17 @@ namespace VRComposer
             return false;
         }
 
+        /// <summary>Controller position in the world from the XR device: tracking space is the camera's parent (Camera Offset).</summary>
+        private static bool DeviceWorldPosition(bool left, Transform head, out Vector3 pos)
+        {
+            pos = Vector3.zero;
+            var dev = UnityEngine.XR.InputDevices.GetDeviceAtXRNode(left ? UnityEngine.XR.XRNode.LeftHand : UnityEngine.XR.XRNode.RightHand);
+            Vector3 p;
+            if (!dev.isValid || !dev.TryGetFeatureValue(UnityEngine.XR.CommonUsages.devicePosition, out p)) return false;
+            pos = head.parent != null ? head.parent.TransformPoint(p) : p;
+            return true;
+        }
+
         private static bool DesktopActive
         {
             get { var d = VRComposerApp.Instance != null ? VRComposerApp.Instance.GetComponent<DesktopMode>() : null; return d != null && d.Active; }
@@ -632,13 +646,15 @@ namespace VRComposer
                 // keep the wrist turned far to keep stepping (so every slice is reachable)
                 else if (Mathf.Abs(total) > twistStepDegrees * 1.7f && Time.unscaledTime - lastStep > 0.45f) step = total > 0 ? sign : -sign;
             }
-            // In VR the wheel is the wrist twist only. Without a tracked controller (desktop testing)
-            // the arrow keys and the mouse wheel step instead.
-            if (!tracked)
+            // Joystick of the same hand (left stick for X, right stick for A; arrows on the keyboard):
+            // each flick left/right moves one slice; hold it to keep stepping.
             {
                 Vector2 s = (w == noteWheel ? lStick : rStick).ReadValue<Vector2>();
-                int sd = Mathf.Abs(s.x) > 0.7f ? (s.x > 0 ? 1 : -1) : 0;
-                if (sd != 0 && sd != stickDirWas) step = sd;
+                int sd = s.x > 0.6f ? 1 : s.x < -0.6f ? -1 : 0;
+                if (sd != 0 && Mathf.Abs(s.x) < Mathf.Abs(s.y) * 0.8f) sd = stickDirWas == sd ? sd : 0;   // mostly up/down: ignore
+                float now = Time.unscaledTime;
+                if (sd != 0 && sd != stickDirWas) { step = sd; stickRepeatAt = now + 0.45f; }
+                else if (sd != 0 && now >= stickRepeatAt) { step = sd; stickRepeatAt = now + 0.22f; }
                 stickDirWas = sd;
             }
             float sc = scroll.ReadValue<Vector2>().y;
@@ -681,9 +697,17 @@ namespace VRComposer
             if (active != null)
             {
                 var cam = Camera.main;
-                if (cam != null) active.Follow(Hand(active), cam.transform, active == noteWheel);
+                if (cam != null)
+                {
+                    Vector3 hp;
+                    var h = Hand(active);
+                    if (h != null && h.gameObject.activeInHierarchy) active.Follow(h.position, true, cam.transform, active == noteWheel);
+                    else if (DeviceWorldPosition(active == noteWheel, cam.transform, out hp)) active.Follow(hp, true, cam.transform, active == noteWheel);
+                    else active.Follow(Vector3.zero, false, cam.transform, active == noteWheel);
+                }
             }
             if (Locked && lockDirty && active == null) DrawLock();
+            if (paletteDirty && !DragSource.Dragging) { paletteDirty = false; app.RebuildPalette(); }
         }
 
         // ======================================================== wheel view
@@ -795,10 +819,10 @@ namespace VRComposer
 
             /// <summary>Above the hand (or at the side of the view in desktop mode), always facing you.
             /// The wheel follows the hand's position only, so it doesn't spin while you twist.</summary>
-            public void Follow(Transform hand, Transform head, bool left)
+            public void Follow(Vector3 handPos, bool haveHand, Transform head, bool left)
             {
                 Vector3 pos;
-                if (hand != null) pos = hand.position + Vector3.up * 0.09f + (head.position - hand.position).normalized * 0.03f;
+                if (haveHand) pos = handPos + Vector3.up * 0.09f + (head.position - handPos).normalized * 0.03f;
                 else pos = head.TransformPoint(new Vector3(left ? -0.17f : 0.17f, -0.08f, 0.45f));
                 var t = canvas.transform;
                 t.position = pos;

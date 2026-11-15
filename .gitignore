@@ -30,3 +30,8 @@ sysinfo.txt
 .vscode/
 # Plastic SCM workspace data
 .plastic/
+
+# Secrets (API keys) - never commit
+.env
+.env.*
+!.env.example

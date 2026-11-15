@@ -1183,23 +1183,32 @@ namespace VRComposer
 
         public static Transform FindRightHand()
         {
-            string[] names = { "Right Controller", "RightHand Controller", "Right Hand", "RightHand", "Right Hand Interaction Visual" };
-            foreach (var n in names)
-            {
-                var go = GameObject.Find(n);
-                if (go != null) return go.transform;
-            }
-            return null;
+            return FindHand(new[] { "Right Controller", "RightHand Controller", "XR Controller Right", "Right Hand", "RightHand", "Right Hand Interaction Visual" });
         }
 
         public static Transform FindLeftHand()
         {
-            string[] names = { "Left Controller", "LeftHand Controller", "Left Hand", "LeftHand", "Left Hand Interaction Visual" };
+            return FindHand(new[] { "Left Controller", "LeftHand Controller", "XR Controller Left", "Left Hand", "LeftHand", "Left Hand Interaction Visual" });
+        }
+
+        /// <summary>
+        /// The controller object of the XR rig. GameObject.Find only sees active objects, and the
+        /// XRI rig keeps a controller inactive until it is tracked, so also search the rig itself.
+        /// </summary>
+        private static Transform FindHand(string[] names)
+        {
             foreach (var n in names)
             {
                 var go = GameObject.Find(n);
                 if (go != null) return go.transform;
             }
+            var cam = Camera.main;
+            var rig = cam != null ? cam.transform.root : null;
+            if (rig == null) return null;
+            var all = rig.GetComponentsInChildren<Transform>(true);
+            foreach (var n in names)
+                foreach (var t in all)
+                    if (t.name == n) return t;
             return null;
         }
     }

@@ -296,6 +296,16 @@ namespace VRComposer
             return true;
         }
 
+        private bool draggingThis;
+
+        private void OnDisable()
+        {
+            if (!draggingThis) return;
+            draggingThis = false;
+            Dragging = false;
+            DragGhost.Hide();
+        }
+
         public void OnBeginDrag(PointerEventData e)
         {
             if (hoverOnly) return;
@@ -310,6 +320,7 @@ namespace VRComposer
             lastTime = Time.unscaledTime;
             DragGhost.Show(payload);
             Dragging = true;
+            draggingThis = true;
             if (onBeginDrag != null) onBeginDrag();
             UIFactory.Buzz(e, 0.35f, 0.04f);
             OnDrag(e);
@@ -527,6 +538,7 @@ namespace VRComposer
         {
             if (hoverOnly) return;
             Dragging = false;
+            draggingThis = false;
             DragGhost.Hide();
             if (onEndDrag != null) onEndDrag();
             if (payload == null) return;

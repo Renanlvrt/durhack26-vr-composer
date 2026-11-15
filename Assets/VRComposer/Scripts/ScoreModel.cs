@@ -402,9 +402,9 @@ namespace VRComposer
         }
 
         /// <summary>Places several notes as one undoable edit (a motif).</summary>
-        public void PlaceMany(Staff s, List<Note> notes)
+        public void PlaceMany(Staff s, List<Note> notes, bool saveUndo = true)
         {
-            SaveUndo();
+            if (saveUndo) SaveUndo();
             foreach (var n in notes)
             {
                 if (n.tick < 0 || CrossesBar(n.tick, n.Length16)) continue;
@@ -630,5 +630,42 @@ namespace VRComposer
         }
 
         public static string LetterName(int letter) { return Letters[Mod(letter, 7)]; }
+
+        /// <summary>
+        /// Inverse of MidiOf: the stave step and accidental that sound this MIDI pitch on this clef,
+        /// spelled for the key signature (notes of the key need no sign; other notes use sharps in
+        /// sharp keys and C major, flats in flat keys; a natural cancels the key signature).
+        /// </summary>
+        public static int StepFromMidi(Clef clef, int midi, int keySig, out int accidental, out bool natural)
+        {
+            int pc = Mod(midi, 12);
+            int letter = -1, alter = 0;
+            // 1. a note of the key (with the key signature applied)
+            for (int l = 0; l < 7 && letter < 0; l++)
+                if (Mod(Semitones[l] + KeyAlteration(keySig, l), 12) == pc) { letter = l; alter = KeyAlteration(keySig, l); }
+            // 2. a natural letter (shown with a natural sign if the key alters it)
+            for (int l = 0; l < 7 && letter < 0; l++)
+                if (Semitones[l] == pc) { letter = l; alter = 0; }
+            // 3. sharp or flat, following the key's direction
+            int dir = keySig < 0 ? -1 : 1;
+            for (int l = 0; l < 7 && letter < 0; l++)
+                if (Mod(Semitones[l] + dir, 12) == pc) { letter = l; alter = dir; }
+            for (int l = 0; l < 7 && letter < 0; l++)
+                if (Mod(Semitones[l] - dir, 12) == pc) { letter = l; alter = -dir; }
+
+            int octave = FloorDiv(midi - Semitones[letter] - alter, 12) - 1;
+            int keyAlt = KeyAlteration(keySig, letter);
+            accidental = alter == keyAlt ? 0 : alter;
+            natural = alter == 0 && keyAlt != 0;
+            return StepFromDiatonic(clef, octave * 7 + letter);
+        }
+
+        /// <summary>Sounding pitch name with octave, e.g. "Eb4", "F#5", "C4" (no key signature implied).</summary>
+        public static string MidiName(int midi, bool preferFlats)
+        {
+            string[] sharp = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            string[] flat = { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+            return (preferFlats ? flat : sharp)[Mod(midi, 12)] + (FloorDiv(midi, 12) - 1);
+        }
     }
 }
