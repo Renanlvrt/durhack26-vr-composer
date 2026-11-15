@@ -27,8 +27,12 @@ namespace VRComposer
     {
         public static QuickEntry Instance { get; private set; }
 
-        [Tooltip("Degrees of wrist twist per wheel slice. Bigger = less sensitive.")]
+        [Tooltip("Most degrees of wrist twist per wheel slice (the wheel uses less when it has many slices, so all of them stay in reach).")]
         public float twistStepDegrees = 32f;
+        [Tooltip("Comfortable wrist roll each way from where you start (degrees). Every slice is reachable within it.")]
+        public float comfortableTwistDegrees = 75f;
+        [Tooltip("Smoothing of the wrist angle (seconds). Higher = steadier, slower.")]
+        public float twistSmoothing = 0.04f;
         [Tooltip("Flip if twisting right moves the wheel the wrong way.")]
         public bool invertTwist = false;
 
@@ -56,7 +60,11 @@ namespace VRComposer
         private string family;
         private bool held;                 // the wheel's button is down (twisting)
         private float awaitingUntil;       // a sub-ring stays open this long waiting for the next hold
-        private Vector3 anchorUp, openUp;
+        // wrist dial: absolute mapping from the twist since the button was pressed
+        private Quaternion dialOpen = Quaternion.identity;
+        private int dialStart, dialOffset;
+        private float dialRawPrev, dialUnwrapped, dialFiltered;
+        private bool dialArmed;
         private float stickRepeatAt;
         private float lastStep;
         private int stickDirWas;
@@ -563,8 +571,7 @@ namespace VRComposer
             {
                 if (active != w) OpenWheel(w, first);
                 held = true;
-                Vector3 f0, u0;
-                anchorUp = openUp = HandPose(w, out f0, out u0) ? u0 : Vector3.up;
+                ArmDial(w);
                 lastStep = Time.unscaledTime;
                 Buzz(w == noteWheel, 0.3f, 0.04f);
             }
@@ -597,6 +604,31 @@ namespace VRComposer
 
         /// <summary>The controller's pointing and up axes, read straight from the XR device (no scene
         /// object needed), else from the controller transform. False without a tracked controller.</summary>
+        private void ArmDial(Wheel w)
+        {
+            Quaternion q;
+            dialArmed = HandRotation(w, out q);
+            dialOpen = dialArmed ? q : Quaternion.identity;
+            dialStart = w.Highlight;
+            dialOffset = 0;
+            dialRawPrev = dialUnwrapped = dialFiltered = 0f;
+            w.SetPointer(dialStart);
+        }
+
+        /// <summary>The controller rotation (tracking space from the XR device, else the controller object).</summary>
+        private bool HandRotation(Wheel w, out Quaternion q)
+        {
+            var dev = UnityEngine.XR.InputDevices.GetDeviceAtXRNode(w == noteWheel ? UnityEngine.XR.XRNode.LeftHand : UnityEngine.XR.XRNode.RightHand);
+            bool isTracked;
+            if (dev.isValid && dev.TryGetFeatureValue(UnityEngine.XR.CommonUsages.deviceRotation, out q)
+                && (!dev.TryGetFeatureValue(UnityEngine.XR.CommonUsages.isTracked, out isTracked) || isTracked))
+                return true;
+            var h = Hand(w);
+            if (h != null) { q = h.rotation; return true; }
+            q = Quaternion.identity;
+            return false;
+        }
+
         private bool HandPose(Wheel w, out Vector3 fwd, out Vector3 up)
         {
             var dev = UnityEngine.XR.InputDevices.GetDeviceAtXRNode(w == noteWheel ? UnityEngine.XR.XRNode.LeftHand : UnityEngine.XR.XRNode.RightHand);
@@ -634,17 +666,45 @@ namespace VRComposer
         {
             var w = active;
             int step = 0;
-            Vector3 f, up;
-            bool tracked = HandPose(w, out f, out up);
+            Quaternion q;
+            bool tracked = HandRotation(w, out q);
             if (held && tracked)
             {
-                // wrist twist = roll around the controller's pointing axis since the last slice change
-                float ang = Vector3.SignedAngle(Vector3.ProjectOnPlane(anchorUp, f), Vector3.ProjectOnPlane(up, f), f);
-                float total = Vector3.SignedAngle(Vector3.ProjectOnPlane(openUp, f), Vector3.ProjectOnPlane(up, f), f);
-                int sign = invertTwist ? 1 : -1;     // a twist to the right (clockwise as you see it) moves clockwise
-                if (Mathf.Abs(ang) >= twistStepDegrees) { step = ang > 0 ? sign : -sign; anchorUp = up; }
-                // keep the wrist turned far to keep stepping (so every slice is reachable)
-                else if (Mathf.Abs(total) > twistStepDegrees * 1.7f && Time.unscaledTime - lastStep > 0.45f) step = total > 0 ? sign : -sign;
+                if (!dialArmed) ArmDial(w);
+                // Wrist dial (like turning a knob):
+                //  - only the twist about the controller's own pointing axis counts (swing-twist
+                //    decomposition of the rotation since the press), so raising, lowering or swinging
+                //    the controller does not move the wheel;
+                //  - absolute: the same wrist angle is always the same slice, so going back is exact;
+                //  - slices get narrower on a busy wheel so all of them fit in a comfortable roll;
+                //  - smoothed, with hysteresis at the borders so it never flickers between two slices.
+                var rel = Quaternion.Inverse(dialOpen) * q;
+                if (rel.w < 0f) { rel.x = -rel.x; rel.y = -rel.y; rel.z = -rel.z; rel.w = -rel.w; }
+                float raw = 2f * Mathf.Atan2(rel.z, rel.w) * Mathf.Rad2Deg;          // twist about local +Z
+                dialUnwrapped += Mathf.DeltaAngle(dialRawPrev, raw);
+                dialRawPrev = raw;
+                float k = 1f - Mathf.Exp(-Time.unscaledDeltaTime / Mathf.Max(0.001f, twistSmoothing));
+                dialFiltered += (dialUnwrapped - dialFiltered) * k;
+
+                int n = Mathf.Max(1, w.Count);
+                int half = Mathf.Max(1, n / 2);
+                float perSlice = Mathf.Clamp(comfortableTwistDegrees / half, 16f, twistStepDegrees);
+                float sign = invertTwist ? 1f : -1f;     // a twist to the right (clockwise as you see it) moves clockwise
+                float cont = sign * dialFiltered / perSlice;
+                if (Mathf.Abs(cont - dialOffset) > 0.62f)
+                {
+                    int next = Mathf.RoundToInt(cont);
+                    step = next - dialOffset;
+                    dialOffset = next;
+                }
+                w.SetPointer(dialStart + cont);
+                if (step != 0)
+                {
+                    w.SetHighlight(dialStart + dialOffset);
+                    lastStep = Time.unscaledTime;
+                    Buzz(w == noteWheel, 0.22f, 0.018f);     // one detent per slice
+                    step = 0;                                 // already applied
+                }
             }
             // In VR the wheel turns with the wrist twist only. Without a tracked controller (desktop
             // testing) the arrow keys step instead: a press moves one slice, hold to keep stepping.
@@ -753,7 +813,9 @@ namespace VRComposer
             private readonly List<TextMeshProUGUI> labels = new List<TextMeshProUGUI>();
             private readonly List<bool> current = new List<bool>();
             public int Highlight { get; private set; }
+            public int Count { get { return slices.Count; } }
             private static Sprite ring, disc;
+            private RectTransform pointer;
 
             static readonly Color Normal = new Color(1f, 1f, 1f, 0.62f), Yellow = new Color(1f, 0.84f, 0.15f, 0.88f), Current = new Color(1f, 0.93f, 0.85f, 0.72f);
 
@@ -768,6 +830,10 @@ namespace VRComposer
                 Centre(back.rectTransform, Vector2.zero, new Vector2(Size, Size));
                 slicesRoot = UIFactory.Rect("Slices", root);
                 Centre(slicesRoot, Vector2.zero, new Vector2(Size, Size));
+                // the needle: follows the wrist continuously, so you see the dial turning with you
+                var needle = UIFactory.Img(root, "Wrist needle", UIFactory.Orange, Disc);
+                pointer = needle.rectTransform;
+                Centre(pointer, new Vector2(0, ROut - 16f), new Vector2(22f, 22f));
                 var hub = UIFactory.Img(root, "Hub", new Color(0.97f, 0.96f, 0.93f, 0.75f), Disc);
                 Centre(hub.rectTransform, Vector2.zero, new Vector2(RIn * 2f - 12f, RIn * 2f - 12f));
                 title = UIFactory.Text(root, "", 22, UIFactory.Ink, TextAlignmentOptions.Center, FontStyles.Bold);
@@ -823,7 +889,27 @@ namespace VRComposer
                 title.text = titleText;
                 Highlight = Mathf.Clamp(start, 0, names.Count - 1);
                 Paint();
+                SetPointer(Highlight);
+                pointer.SetAsLastSibling();
                 canvas.gameObject.SetActive(true);
+            }
+
+            public void SetHighlight(int index)
+            {
+                if (slices.Count == 0) return;
+                int h = ((index % slices.Count) + slices.Count) % slices.Count;   // loops round
+                if (h == Highlight) return;
+                Highlight = h;
+                Paint();
+            }
+
+            /// <summary>Needle position in slices (fractional): 0 = top slice centre, clockwise.</summary>
+            public void SetPointer(float slicePos)
+            {
+                if (pointer == null || slices.Count == 0) return;
+                float a = slicePos * (360f / slices.Count) * Mathf.Deg2Rad;
+                float r = ROut - 16f;
+                pointer.anchoredPosition = new Vector2(Mathf.Sin(a), Mathf.Cos(a)) * r;
             }
 
             public void Step(int dir)
@@ -831,6 +917,7 @@ namespace VRComposer
                 if (slices.Count == 0) return;
                 Highlight = ((Highlight + dir) % slices.Count + slices.Count) % slices.Count;   // loops round
                 Paint();
+                SetPointer(Highlight);
             }
 
             private void Paint()
