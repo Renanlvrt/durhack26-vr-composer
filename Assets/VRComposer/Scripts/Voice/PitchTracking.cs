@@ -118,14 +118,20 @@ namespace VRComposer.Voice
 
     public class SegmenterSettings
     {
-        public double minConf = 0.6;            // periodicity needed to count as voiced
+        public double minConf = 0.7;            // periodicity needed to count as voiced (tuned on Vocadito)
         public double gateBelowPeakDb = 32;     // voiced only within this many dB of the loud parts
         public double minNoteSec = 0.07;
-        public double dipDb = 4.5;              // an energy dip this deep (vs both sides) splits a note: "la-la"
+        public double dipDb = 6;                // an energy dip this deep (vs both sides) splits a note: "la-la"
         public double dipWindowSec = 0.12;      // look this far each side of a dip for the peaks
-        public double pitchJumpSemis = 0.7;     // a held move this big starts a new note
-        public double pitchHoldSec = 0.05;
+        public double pitchJumpSemis = 1.2;     // a held move this big starts a new note (tuned on Vocadito)
+        public double pitchHoldSec = 0.08;
         public double maxGapSec = 0.03;         // unvoiced holes this short are bridged
+        public double glideSlope = 0.15;        // semitones per 10 ms: faster = a glide/scoop, not a note (crepe_notes)
+        public double tailDropDb = 12;          // a phrase ends this far below its own peak (aubio): no quiet octave tails
+        public double minTuningAgreement = 0.6; // apply the tuning offset only if the notes agree on it
+        public bool keySnap = false;            // notes sung between two semitones take the one in the key (off: worse on Vocadito)
+        public double ambiguousFrom = 0.3;      // "between" = fraction 0.3..0.7 of a semitone
+        public double riseDb = 4;               // pYIN onset rule: a loudness rise this big over 20 ms starts a syllable (0 = off)
     }
 
     /// <summary>
@@ -162,6 +168,22 @@ namespace VRComposer.Voice
             }
             // octave-error repair: a frame an octave away from both neighbours' median is folded back
             pitch = MedianFilter(pitch, voiced, 5);
+            // longer-range octave check (+-150 ms): a stretch an octave off its surroundings is folded back
+            {
+                var fixedP = (double[])pitch.Clone();
+                var w = new List<double>();
+                for (int i = 0; i < n; i++)
+                {
+                    if (!voiced[i]) continue;
+                    w.Clear();
+                    for (int j = Math.Max(0, i - 15); j <= Math.Min(n - 1, i + 15); j++) if (voiced[j]) w.Add(pitch[j]);
+                    w.Sort();
+                    double med = w[w.Count / 2], d = pitch[i] - med;
+                    if (Math.Abs(d - 12) < 2) fixedP[i] = pitch[i] - 12;
+                    else if (Math.Abs(d + 12) < 2) fixedP[i] = pitch[i] + 12;
+                }
+                pitch = fixedP;
+            }
             // bridge tiny holes
             int maxGap = (int)Math.Round(st.maxGapSec / hop);
             for (int i = 0; i < n; i++)
@@ -185,7 +207,12 @@ namespace VRComposer.Voice
                 if (!voiced[r]) { r++; continue; }
                 int e = r;
                 while (e < n && voiced[e]) e++;
-                SplitRegion(fr, pitch, db, r, e, hop, st, notes);
+                // the phrase ends once it falls tailDropDb below its own peak (quiet tails track octaves wrong)
+                int pk = r;
+                for (int i = r; i < e; i++) if (fr[i].rmsDb > fr[pk].rmsDb) pk = i;
+                int end = e;
+                while (end - 1 > pk && fr[end - 1].rmsDb < fr[pk].rmsDb - st.tailDropDb) end--;   // only the final fade
+                if (end - r >= 2) SplitRegion(fr, pitch, db, r, end, hop, st, notes);
                 r = e;
             }
 
@@ -193,17 +220,38 @@ namespace VRComposer.Voice
             notes.RemoveAll(x => x.end - x.start < st.minNoteSec);
 
             // global tuning: circular mean of each note's offset from the nearest semitone (duration weighted)
-            double sx = 0, sy = 0;
+            double sx = 0, sy = 0, wsum = 0;
             foreach (var x in notes)
             {
                 double frac = x.pitch - Math.Round(x.pitch);
                 double w = x.end - x.start;
                 sx += w * Math.Cos(2 * Math.PI * frac);
                 sy += w * Math.Sin(2 * Math.PI * frac);
+                wsum += w;
             }
-            double offset = notes.Count > 0 ? Math.Atan2(sy, sx) / (2 * Math.PI) : 0;
+            double agreement = wsum > 0 ? Math.Sqrt(sx * sx + sy * sy) / wsum : 0;
+            // only trust a tuning offset that the notes agree on (a few glide-y notes give a random one)
+            double offset = notes.Count >= 4 && agreement >= st.minTuningAgreement ? Math.Atan2(sy, sx) / (2 * Math.PI) : 0;
             tuningCents = offset * 100;
             foreach (var x in notes) x.midi = (int)Math.Round(x.pitch - offset);
+            if (st.keySnap) KeySnap(notes, offset, st.ambiguousFrom);
+
+            // glissando fragments (Ryynanen & Klapuri): a short piece whose pitch lies between its two
+            // neighbours, with no consonant around it, is the slide between them: it joins the note it lands on
+            for (int i = notes.Count - 2; i >= 1; i--)
+            {
+                var p = notes[i - 1]; var f = notes[i]; var q = notes[i + 1];
+                bool touching = f.start - p.end < 0.03 && q.start - f.end < 0.03;
+                double lo = Math.Min(p.pitch, q.pitch), hi = Math.Max(p.pitch, q.pitch);
+                bool between = f.pitch > lo + 0.25 && f.pitch < hi - 0.25;
+                // (a consonant before the slide is fine: "la" then a scoop up to the note)
+                if (touching && between && f.end - f.start < 0.16 && !q.afterDip)
+                {
+                    q.start = f.start;
+                    q.afterDip = f.afterDip;
+                    notes.RemoveAt(i);
+                }
+            }
 
             // octave blips: a short note an octave away from the note it touches is a tracking error
             // (common at the start of low notes): give its time to that neighbour
@@ -257,6 +305,19 @@ namespace VRComposer.Voice
                 }
             }
 
+            // 1b. sudden loudness rises (pYIN/Tony onset rule)
+            if (st.riseDb > 0)
+            {
+                int g = Math.Max(1, (int)Math.Round(0.02 / hop));
+                for (int i = r0 + 1; i + g < r1; i++)
+                {
+                    if (db[i + g] - db[i] < st.riseDb || db[i] > db[i - 1] + 0.5) continue;   // start of a rise only
+                    bool near = false;
+                    foreach (var c in cuts) if (Math.Abs(c - i) < minSep) { near = true; break; }
+                    if (!near && i - r0 >= minSep && r1 - i >= minSep) { cuts.Add(i); dipCuts.Add(i); }
+                }
+            }
+
             // 2. held pitch changes (legato steps without a consonant)
             int hold = Math.Max(2, (int)Math.Round(st.pitchHoldSec / hop));
             int segStart = r0;
@@ -283,19 +344,95 @@ namespace VRComposer.Voice
                 }
             }
 
+            // glide frames (fast pitch movement or low confidence) never vote on a note's pitch
+            double k10 = hop / 0.01;
+            var glide = new bool[r1 - r0];
+            for (int i = r0; i < r1; i++)
+            {
+                double prev = i > r0 ? pitch[i - 1] : pitch[i], next = i + 1 < r1 ? pitch[i + 1] : pitch[i];
+                double slope = Math.Abs(next - prev) / ((i > r0 && i + 1 < r1) ? 2 : 1) / k10;
+                glide[i - r0] = double.IsNaN(slope) || slope > st.glideSlope || fr[i].conf < 0.65;
+            }
+
             var bounds = new List<int> { r0 };
             foreach (var c in cuts) if (c > r0 && c < r1) bounds.Add(c);
             bounds.Add(r1);
+            int carry = -1;            // start of a slide-only piece, given to the note it lands on
+            bool carryDip = false;
             for (int b = 0; b + 1 < bounds.Count; b++)
             {
                 int a = bounds[b], z = bounds[b + 1];
                 if (z - a < 2) continue;
-                // stable middle: skip the first and last quarter (scoops, falls)
-                int q = (z - a) / 4;
-                double p = Median(pitch, a + q, z - q);
-                if (double.IsNaN(p)) continue;
-                notes.Add(new SungNote { start = fr[a].time - hop * 0.5, end = fr[z - 1].time + hop * 0.5, pitch = p, afterDip = dipCuts.Contains(a) });
+                // stable frames: not gliding, and not the outer 15% (scoop in, fall out)
+                int q = (z - a) * 15 / 100;
+                var l = new List<double>();
+                for (int i = a + q; i < z - q; i++) if (!glide[i - r0] && !double.IsNaN(pitch[i])) l.Add(pitch[i]);
+                if (l.Count < 3)
+                {
+                    // a piece that is only a slide: not a note of its own
+                    if (carry < 0) { carry = a; carryDip = dipCuts.Contains(a); }
+                    continue;
+                }
+                l.Sort();
+                double p = l.Count % 2 == 1 ? l[l.Count / 2] : (l[l.Count / 2 - 1] + l[l.Count / 2]) / 2;
+                int s0 = carry >= 0 ? carry : a;
+                notes.Add(new SungNote { start = fr[s0].time - hop * 0.5, end = fr[z - 1].time + hop * 0.5, pitch = p, afterDip = carry >= 0 ? carryDip : dipCuts.Contains(a) });
+                carry = -1;
             }
+            // a trailing slide belongs to the last note
+            if (carry >= 0 && notes.Count > 0 && notes[notes.Count - 1].end >= fr[carry].time - hop) notes[notes.Count - 1].end = fr[r1 - 1].time + hop * 0.5;
+        }
+
+        // Krumhansl-Kessler key profiles (major, minor), index 0 = tonic
+        private static readonly double[] MajorProfile = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+        private static readonly double[] MinorProfile = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
+        private static readonly int[] MajorScale = { 0, 2, 4, 5, 7, 9, 11 };
+        private static readonly int[] MinorScale = { 0, 2, 3, 5, 7, 8, 10 };
+
+        /// <summary>
+        /// A note sung half-way between two semitones (|fraction| near 0.5 after the tuning fix) takes
+        /// the neighbour that belongs to the key of the take (Krumhansl-Kessler key finding on the
+        /// duration-weighted notes). Clear notes are never changed.
+        /// </summary>
+        public static void KeySnap(List<SungNote> notes, double offset, double ambiguousFrom)
+        {
+            if (notes.Count < 4) return;
+            var hist = new double[12];
+            foreach (var x in notes) hist[((x.midi % 12) + 12) % 12] += x.end - x.start;
+            double best = double.MinValue; int tonic = 0; bool minor = false;
+            for (int t = 0; t < 12; t++)
+                for (int mode = 0; mode < 2; mode++)
+                {
+                    var prof = mode == 0 ? MajorProfile : MinorProfile;
+                    double c = Correlation(hist, prof, t);
+                    if (c > best) { best = c; tonic = t; minor = mode == 1; }
+                }
+            if (best < 0.5) return;   // no clear key: leave the notes as sung
+            var scale = new bool[12];
+            foreach (var d in minor ? MinorScale : MajorScale) scale[(tonic + d) % 12] = true;
+            foreach (var x in notes)
+            {
+                double q = x.pitch - offset;
+                double lo = Math.Floor(q), frac = q - lo;
+                if (frac < ambiguousFrom || frac > 1 - ambiguousFrom) continue;
+                bool loIn = scale[(((int)lo % 12) + 12) % 12], hiIn = scale[((((int)lo + 1) % 12) + 12) % 12];
+                if (loIn && !hiIn) x.midi = (int)lo;
+                else if (hiIn && !loIn) x.midi = (int)lo + 1;
+            }
+        }
+
+        private static double Correlation(double[] h, double[] prof, int tonic)
+        {
+            double mh = 0, mp = 0;
+            for (int i = 0; i < 12; i++) { mh += h[i]; mp += prof[i]; }
+            mh /= 12; mp /= 12;
+            double num = 0, dh = 0, dp = 0;
+            for (int i = 0; i < 12; i++)
+            {
+                double a = h[(tonic + i) % 12] - mh, b = prof[i] - mp;
+                num += a * b; dh += a * a; dp += b * b;
+            }
+            return dh > 0 && dp > 0 ? num / Math.Sqrt(dh * dp) : 0;
         }
 
         private static double Median(double[] v, int a, int z)
