@@ -158,7 +158,7 @@ namespace VRComposer.Voice
         private float[] Resample(float[] src)
         {
             double step = (double)devRate / Rate;
-            var list = new System.Collections.Generic.List<float>(src.Length * Rate / devRate + 2);
+            var list = new System.Collections.Generic.List<float>((int)((long)src.Length * Rate / devRate) + 2);   // long: no overflow on big chunks
             // resamplePos is relative to the previous chunk's last sample (index -1 = lastSample)
             while (resamplePos < src.Length - 1)
             {

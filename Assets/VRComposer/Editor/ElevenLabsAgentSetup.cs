@@ -107,8 +107,9 @@ namespace VRComposer.EditorTools
         {
             var req = new HttpRequestMessage(new HttpMethod(method), Api + path);
             if (body != null) req.Content = new StringContent(body.ToString(Newtonsoft.Json.Formatting.None), Encoding.UTF8, "application/json");
-            var resp = http.SendAsync(req).Result;
-            var text = resp.Content.ReadAsStringAsync().Result;
+            // run off Unity's main thread: blocking on it with .Result can deadlock the editor
+            var resp = System.Threading.Tasks.Task.Run(() => http.SendAsync(req)).Result;
+            var text = System.Threading.Tasks.Task.Run(() => resp.Content.ReadAsStringAsync()).Result;
             if (!resp.IsSuccessStatusCode) throw new Exception(method + " " + path + ": " + (int)resp.StatusCode + " " + (text.Length > 400 ? text.Substring(0, 400) : text));
             return string.IsNullOrEmpty(text) ? new JObject() : JObject.Parse(text);
         }
