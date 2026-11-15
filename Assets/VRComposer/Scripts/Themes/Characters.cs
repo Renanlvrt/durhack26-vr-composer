@@ -344,7 +344,19 @@ namespace VRComposer
         public void TakeBow() { bowStart = Time.time; bowUntil = Time.time + 2.2f; }
 
         // ---------- animation ----------
-        void Update() => UpdatePose(Time.deltaTime);
+        // The audience (behind you) only breathes, nods and claps: animate it every 3rd frame,
+        // staggered, so the venue costs less per frame. Claps run every frame; musicians always do.
+        private float skipped;
+        private static int staggerCounter;
+        private readonly int stagger = staggerCounter++ % 3;
+        void Update()
+        {
+            skipped += Time.deltaTime;
+            bool busy = role != Role.Audience || Time.time < clapUntil;
+            if (!busy && (Time.frameCount + stagger) % 3 != 0) return;
+            UpdatePose(skipped);
+            skipped = 0f;
+        }
 
         Vector3 SolveIK(Vector3 shoulder, Vector3 target, Vector3 pole, Transform upper, Transform fore, Transform hand)
         {

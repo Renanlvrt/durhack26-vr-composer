@@ -7,17 +7,23 @@ using UnityEngine.UI;
 namespace VRComposer
 {
     /// <summary>Drop target for notes, rests, motifs and symbols: one staff row.</summary>
-    public class StaffZone : MonoBehaviour, IPointerClickHandler
+    public class StaffZone : MonoBehaviour, IPointerClickHandler, IPointerMoveHandler, IPointerExitHandler
     {
         public Staff staff;
         public int staffIndex;
         public ScoreView view;
 
+        // Pointing at the stave shows the loaded note (QuickEntry); a click / trigger places it there.
+        public void OnPointerMove(PointerEventData e) { var q = QuickEntry.Instance; if (q != null) q.HoverStave(this, e); }
+        public void OnPointerExit(PointerEventData e) { var q = QuickEntry.Instance; if (q != null) q.LeaveStave(this, e); }
+
         public void OnPointerClick(PointerEventData e)
         {
             if (e.dragging) return;
+            var q = QuickEntry.Instance;
+            if (q != null && q.ClickStave(this, e)) return;
             var app = VRComposerApp.Instance;
-            if (app != null) { app.SelectStaff(staffIndex); app.Deselect(); }
+            if (app != null) app.SelectStaff(staffIndex);
         }
     }
 
@@ -133,6 +139,9 @@ namespace VRComposer
             lane = UIFactory.Rect("Chord lane", root);
             overlay = UIFactory.Rect("Drag overlay", root);
             UIFactory.PlaceTopLeft(overlay, 0, 0, Width, 10);
+            // Nested canvas: the readout changes as you point around; on its own canvas a change
+            // doesn't re-batch every glyph of the score.
+            readout.gameObject.AddComponent<Canvas>();
         }
 
         public void SetPage(int start)
@@ -189,6 +198,11 @@ namespace VRComposer
             var staff = score.staves[index];
             var row = UIFactory.Rect("Staff " + (index + 1) + " · " + staff.name, rows);
             UIFactory.PlaceTopLeft(row, 0, -index * RowH, Width, RowH);
+            // Each stave is its own nested canvas: the ghost note (drawn in the row) changes as the
+            // ray moves, and then only this stave is re-batched. It needs its own raycasters.
+            row.gameObject.AddComponent<Canvas>();
+            row.gameObject.AddComponent<UnityEngine.XR.Interaction.Toolkit.UI.TrackedDeviceGraphicRaycaster>();
+            row.gameObject.AddComponent<MouseGraphicRaycaster>();
 
             var hit = UIFactory.HitArea(row, "Drop area");
             UIFactory.PlaceTopLeft(hit.rectTransform, StaffLeft - 10f, 0, Width - StaffLeft, RowH);
@@ -255,6 +269,8 @@ namespace VRComposer
             // playhead
             var ph = UIFactory.Img(row, "Playhead", UIFactory.Orange);
             UIFactory.PlaceTopLeft(ph.rectTransform, X0, StepY(10), 3f, 6f * LS, new Vector2(0.5f, 1f));
+            // own nested canvas: moving it every frame then re-batches this one bar, not the whole score
+            ph.gameObject.AddComponent<Canvas>();
             ph.gameObject.SetActive(false);
             playheads.Add(ph.rectTransform);
         }
@@ -520,7 +536,11 @@ namespace VRComposer
                 if (ph == null) continue;
                 bool vis = show && onPage;
                 if (ph.gameObject.activeSelf != vis) ph.gameObject.SetActive(vis);
-                if (vis) ph.anchoredPosition = new Vector2(TickX(tick) - SlotW * 0.5f, StepY(10));
+                if (vis)
+                {
+                    var pos = new Vector2(TickX(tick) - SlotW * 0.5f, StepY(10));
+                    if ((ph.anchoredPosition - pos).sqrMagnitude > 0.01f) ph.anchoredPosition = pos;
+                }
             }
 
             // highlight the note sounding on the selected staff

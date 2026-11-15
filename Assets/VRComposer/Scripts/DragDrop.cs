@@ -21,6 +21,7 @@ namespace VRComposer
         public Staff fromStaff;
         public Note note;            // MoveNote
         public ChordBlock chord;     // MoveChord
+        public Note style;           // quick entry: sharp/flat/natural/staccato/accent/tie for the new note
 
         public int Length16
         {
@@ -235,8 +236,69 @@ namespace VRComposer
 
         private static VRComposerApp App { get { return VRComposerApp.Instance; } }
 
+        /// <summary>True while any palette/note drag is in progress (quick entry waits).</summary>
+        public static bool Dragging { get; private set; }
+
+        // ---------- hover mode: the loaded note follows the ray, a click places it (QuickEntry) ----------
+        private bool hoverOnly;
+
+        public void BeginHover(DragPayload p)
+        {
+            payload = p;
+            hoverOnly = true;
+            filter.Reset();
+            snap.Reset();
+            history.Clear();
+            currentZone = null;
+            lastKey = null;
+            lastTime = Time.unscaledTime;
+        }
+
+        public bool Hovering { get { return hoverOnly && payload != null; } }
+        public void HoverMove(PointerEventData e) { if (Hovering) OnDrag(e); }
+
+        /// <summary>Forget the drawn ghost so the next move redraws it (after the score was rebuilt).</summary>
+        public void InvalidateHover() { lastKey = null; }
+
+        public void EndHover()
+        {
+            if (!Hovering) return;
+            payload = null;
+            hoverOnly = false;
+            history.Clear();
+            var app = App;
+            if (app != null && app.View != null) { app.View.ClearOverlay(); app.View.RestoreReadout(); }
+        }
+
+        /// <summary>Where the ghost is now (for B-lock to start from).</summary>
+        public bool LastHover(out int staffIndex, out int tick, out int step)
+        {
+            staffIndex = tick = step = 0;
+            if (history.Count == 0) return false;
+            var h = history[history.Count - 1];
+            if (!(h.zone is StaffZone) || !h.valid) return false;
+            staffIndex = h.staffIndex; tick = h.tick; step = h.step;
+            return true;
+        }
+
+        /// <summary>Places the loaded note where the ghost was (same jitter rules as a drop). Keeps hovering.</summary>
+        public bool CommitHover(PointerEventData e)
+        {
+            if (!Hovering) return false;
+            Pending chosen;
+            bool have = ChooseDrop(out chosen);
+            history.Clear();
+            lastKey = null;
+            if (!have || !(chosen.zone is StaffZone) || !chosen.valid) return false;
+            var sz = (StaffZone)chosen.zone;
+            UIFactory.Buzz(e, 0.6f, 0.06f);
+            App.DropOnStaff(sz.staff, Realise(payload, sz.staff, chosen.tick, chosen.step), payload);
+            return true;
+        }
+
         public void OnBeginDrag(PointerEventData e)
         {
+            if (hoverOnly) return;
             if (payloadFactory == null || App == null) return;
             payload = payloadFactory();
             if (payload == null) return;
@@ -247,6 +309,7 @@ namespace VRComposer
             lastKey = null;
             lastTime = Time.unscaledTime;
             DragGhost.Show(payload);
+            Dragging = true;
             if (onBeginDrag != null) onBeginDrag();
             UIFactory.Buzz(e, 0.35f, 0.04f);
             OnDrag(e);
@@ -401,8 +464,9 @@ namespace VRComposer
             string what = payload.IsRest ? "Rest" : payload.kind == DragKind.Motif ? BeginnerKit.Motifs[payload.motif].name + " from " + app.Score.NameOf(sz.staff.clef, step)
                 : app.Score.NameOf(sz.staff.clef, step, payload.kind == DragKind.MoveNote ? payload.note.accidental : 0);
             string fitText = fit == Fit.None ? "" : "   " + BeginnerKit.FitLabel(fit) + (string.IsNullOrEmpty(why) ? "" : ": " + why);
-            view.SetReadout(what + "  ·  bar " + bar + ", beat " + beat.ToString(beat % 1f == 0f ? "0" : "0.##") + fitText);
-            UIFactory.Buzz(lastEvent, 0.15f, 0.015f);
+            view.SetReadout(what + "  ·  bar " + bar + ", beat " + beat.ToString(beat % 1f == 0f ? "0" : "0.##") + fitText + (hoverOnly ? "  ·  trigger to place" : ""));
+            UIFactory.Buzz(lastEvent, hoverOnly ? 0.06f : 0.15f, 0.015f);
+            if (hoverOnly) return;   // no sound while just pointing around
             if (!payload.IsRest && payload.kind != DragKind.Motif) app.Player.PreviewNote(sz.staff.program, app.Score.MidiOf(sz.staff.clef, step, payload.kind == DragKind.MoveNote ? payload.note.accidental : 0), 0.22f);
         }
 
@@ -449,12 +513,20 @@ namespace VRComposer
                     if (!m.isRest) m.step = step;
                     return new List<Note> { m };
                 default:
-                    return new List<Note> { new Note { tick = tick, duration = payload.duration, dotted = payload.dotted, isRest = payload.kind == DragKind.Rest, step = payload.kind == DragKind.Rest ? 4 : step } };
+                    var nn = new Note { tick = tick, duration = payload.duration, dotted = payload.dotted, isRest = payload.kind == DragKind.Rest, step = payload.kind == DragKind.Rest ? 4 : step };
+                    if (payload.style != null && !nn.isRest)
+                    {
+                        nn.accidental = payload.style.accidental; nn.natural = payload.style.natural;
+                        nn.staccato = payload.style.staccato; nn.accent = payload.style.accent; nn.tie = payload.style.tie;
+                    }
+                    return new List<Note> { nn };
             }
         }
 
         public void OnEndDrag(PointerEventData e)
         {
+            if (hoverOnly) return;
+            Dragging = false;
             DragGhost.Hide();
             if (onEndDrag != null) onEndDrag();
             if (payload == null) return;

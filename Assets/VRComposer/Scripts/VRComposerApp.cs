@@ -114,6 +114,7 @@ namespace VRComposer
             DesktopMode.EnableMouseUI();
             var desktop = gameObject.GetComponent<DesktopMode>() ?? gameObject.AddComponent<DesktopMode>();
             desktop.forceDesktop = forceDesktopMode;
+            if (GetComponent<QuickEntry>() == null) gameObject.AddComponent<QuickEntry>();
 
             Score = new Score();
             Score.AddStaff(Instruments.Find("Flute"));
@@ -261,15 +262,32 @@ namespace VRComposer
         private void OnScoreChanged()
         {
             if (SelectedNote != null && (SelectedNoteStaff == null || !Score.staves.Contains(SelectedNoteStaff) || !SelectedNoteStaff.notes.Contains(SelectedNote))) SetSelection(null, null);
-            Refresh();
+            Refresh(false);
         }
 
-        private void Refresh()
+        // What the palette / inspector show, besides the notes. Placing a note changes neither, so
+        // they are only rebuilt when this changes (rebuilding all three panels per note was a hitch).
+        private string panelSignature = null;
+        private string PanelSignature()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append(Score.IsBeginner).Append('|').Append(Score.keyIndex).Append('|').Append(Score.keySignature).Append('|')
+              .Append(Score.timeSigNumerator).Append('/').Append(Score.timeSigDenominator).Append('|').Append(Score.tempoBpm).Append('|')
+              .Append(Score.bars).Append('|').Append(Score.backingChords).Append(Score.backingDrums).Append('|').Append(SelectedStaff).Append('|')
+              .Append(pickerOpen).Append('|').Append(Themes != null ? (int)Themes.Current : -1).Append('|');
+            foreach (var st in Score.staves) sb.Append(st.name).Append(':').Append(st.program).Append(':').Append((int)st.clef).Append(',');
+            return sb.ToString();
+        }
+
+        private void Refresh(bool force = true)
         {
             if (SelectedStaff >= Score.staves.Count) SelectedStaff = Mathf.Max(0, Score.staves.Count - 1);
             View.Rebuild();
-            RebuildPalette();
-            RebuildInspector();
+            string sig = PanelSignature();
+            // Beginner suggestions ("fits next") depend on the notes, so the palette follows every edit there.
+            if (force || Score.IsBeginner || sig != panelSignature) RebuildPalette();
+            if (force || sig != panelSignature) RebuildInspector();
+            panelSignature = sig;
             UpdateIdleReadout();
             if (Mathf.Abs(View.Height - lastScoreHeight) > 1f && layoutFwd != Vector3.zero) Layout();
         }
@@ -321,6 +339,7 @@ namespace VRComposer
             View.pageStart = 0;
             Deselect();
             Score.SetMode(m);
+            if (QuickEntry.Instance != null) QuickEntry.Instance.OnModeChanged();
             UIFactory.SetButton(wristMode, m == ComposeMode.Beginner ? "Beginner" : "Advanced", UIFactory.Indigo);
         }
 
@@ -330,7 +349,7 @@ namespace VRComposer
             Refresh();
         }
 
-        private Staff CurrentStaff
+        public Staff CurrentStaff
         {
             get { return Score.staves.Count == 0 ? null : Score.staves[Mathf.Clamp(SelectedStaff, 0, Score.staves.Count - 1)]; }
         }
@@ -359,7 +378,27 @@ namespace VRComposer
         {
             SelectedNote = n;
             SelectedNoteStaff = s;
-            if (n != null) PauseLocomotion(); else ResumeLocomotion();
+            RefreshLocomotion();
+        }
+
+        /// <summary>The sticks drive teleport/turn in the XR template: off while a note is selected,
+        /// while B-lock is on, or while a wheel is open.</summary>
+        public void RefreshLocomotion()
+        {
+            var q = QuickEntry.Instance;
+            if (SelectedNote != null || (q != null && q.UsesSticks)) PauseLocomotion(); else ResumeLocomotion();
+        }
+
+        public void SetWristMenuVisible(bool on) { if (wristCanvas != null) wristCanvas.gameObject.SetActive(on); }
+
+        /// <summary>Adds an instrument (staff), selects it and plays a note on it.</summary>
+        public Staff AddInstrument(InstrumentDef def)
+        {
+            var staff = Score.AddStaff(def);
+            if (staff == null) { View.SetIdleReadout("At most " + Score.MaxStaves + " instruments"); return null; }
+            SelectStaff(Score.staves.Count - 1);
+            Player.PreviewNote(staff.program, Score.MidiOf(staff.clef, 4));
+            return staff;
         }
 
         private void SetupInput()
@@ -371,14 +410,15 @@ namespace VRComposer
                 .With("Left", "<Keyboard>/leftArrow").With("Right", "<Keyboard>/rightArrow");
             nudgeAction.Enable();
 
+            // Y (left) deselects. B is quick-entry lock and A / X open the wheels (QuickEntry).
             backAction = new InputAction("VRComposer Deselect", InputActionType.Button);
-            backAction.AddBinding("<XRController>{RightHand}/{SecondaryButton}");
+            backAction.AddBinding("<XRController>{LeftHand}/{SecondaryButton}");
             backAction.AddBinding("<Keyboard>/escape");
-            backAction.performed += _ => Deselect();
+            backAction.performed += _ => { var q = QuickEntry.Instance; if (q != null && q.Cancel()) return; Deselect(); };
             backAction.Enable();
 
+            // Play / Stop: the Play buttons on the panels, or Space on the keyboard (A is the instrument wheel now)
             playAction = new InputAction("VRComposer Play", InputActionType.Button);
-            playAction.AddBinding("<XRController>{RightHand}/{PrimaryButton}");
             playAction.AddBinding("<Keyboard>/space");
             playAction.performed += _ => { if (started) Player.TogglePlay(); };
             playAction.Enable();
@@ -394,6 +434,8 @@ namespace VRComposer
 
         private void HandleNudge()
         {
+            var qe = QuickEntry.Instance;
+            if (qe != null && qe.UsesSticks) { heldDir = Vector2Int.zero; return; }   // B-lock or a wheel owns the stick
             if (SelectedNote == null) { heldDir = Vector2Int.zero; return; }
             Vector2 v = nudgeAction.ReadValue<Vector2>();
             Vector2Int dir = Vector2Int.zero;
@@ -458,24 +500,64 @@ namespace VRComposer
         private void Update()
         {
             HandleNudge();
+            LogFrameTimes();
             bool playing = Player.IsPlaying;
-            UIFactory.SetButton(playButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
-            UIFactory.SetButton(View.PlayButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
-            UIFactory.SetButton(wristPlay, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
-            if (undoButton != null) undoButton.interactable = Score.CanUndo;
+            // Only touch the UI when something changed: any change re-batches the whole panel canvas.
+            if (playing != shownPlaying || View.PlayButton != shownViewPlay || playButton != shownPlayBtn || wristPlay != shownWristPlay)
+            {
+                shownPlaying = playing;
+                shownViewPlay = View.PlayButton; shownPlayBtn = playButton; shownWristPlay = wristPlay;
+                UIFactory.SetButton(playButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
+                UIFactory.SetButton(View.PlayButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
+                UIFactory.SetButton(wristPlay, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
+            }
+            if (undoButton != null && undoButton.interactable != Score.CanUndo) undoButton.interactable = Score.CanUndo;
             if (positionText != null)
             {
-                if (!Player.IsReady)
-                    positionText.text = string.IsNullOrEmpty(Player.LastError) ? "Loading sounds..." : Player.LastError;
+                int key;
+                if (!Player.IsReady) key = -1;
                 else
                 {
                     float beat = playing ? Player.PositionBeats : 0f;
                     int bar = Mathf.FloorToInt(beat / Score.BeatsPerBar);
-                    float inBar = beat - bar * Score.BeatsPerBar;
-                    positionText.text = "Bar " + (bar + 1) + " / " + Score.bars + "   beat " + (Mathf.FloorToInt(inBar) + 1);
+                    int inBar = Mathf.FloorToInt(beat - bar * Score.BeatsPerBar);
+                    key = (bar * 64 + inBar) * 1024 + Score.bars;
+                }
+                if (key != shownPosition || key == -1)
+                {
+                    shownPosition = key;
+                    string s;
+                    if (key == -1) s = string.IsNullOrEmpty(Player.LastError) ? "Loading sounds..." : Player.LastError;
+                    else
+                    {
+                        float beat = playing ? Player.PositionBeats : 0f;
+                        int bar = Mathf.FloorToInt(beat / Score.BeatsPerBar);
+                        float inBar = beat - bar * Score.BeatsPerBar;
+                        s = "Bar " + (bar + 1) + " / " + Score.bars + "   beat " + (Mathf.FloorToInt(inBar) + 1);
+                    }
+                    if (positionText.text != s) positionText.text = s;
                 }
             }
         }
+
+        [Tooltip("Logs the frame rate every 10 s (average and worst frame) to the console.")]
+        public bool logFrameTimes = true;
+        private float perfStart, perfWorst; private int perfFrames;
+        private void LogFrameTimes()
+        {
+            if (!logFrameTimes) return;
+            float dt = Time.unscaledDeltaTime;
+            if (perfFrames > 0 && dt > perfWorst) perfWorst = dt;   // skip the first frame (it includes the previous log)
+            perfFrames++;
+            float span = Time.unscaledTime - perfStart;
+            if (span < 10f) return;
+            Debug.Log("[VRComposer] " + (perfFrames / span).ToString("0") + " fps average, worst frame " + (perfWorst * 1000f).ToString("0") + " ms (last 10 s" + (Player.IsPlaying ? ", playing" : "") + ")");
+            perfStart = Time.unscaledTime; perfFrames = 0; perfWorst = 0f;
+        }
+
+        private bool shownPlaying;
+        private Button shownViewPlay, shownPlayBtn, shownWristPlay;
+        private int shownPosition = int.MinValue;
 
         // ================================================================== edits from drag & drop
 
@@ -630,7 +712,7 @@ namespace VRComposer
             UIFactory.PlaceTopLeft(paletteHint.rectTransform, 22, -PalH + 22 + 74 + 52, PalW - 44, 44);
         }
 
-        private void RebuildPalette()
+        public void RebuildPalette()
         {
             if (paletteContent == null) return;
             UIFactory.ClearChildren(paletteContent);
@@ -673,8 +755,8 @@ namespace VRComposer
                     foreach (SymbolKind k in Enum.GetValues(typeof(SymbolKind))) { var kk = k; tiles.Add(r => SymbolTile(r, kk)); }
                     break;
                 default:
-                    hint = beginner ? "Drag a note onto the stave: it snaps to notes that always sound good. Tap = add at the end."
-                                    : "Drag onto the stave. Tap = add at the end. Select a note, then thumbstick to nudge.";
+                    hint = beginner ? "Tap a note to load it, then point at the stave and pull the trigger. It snaps to notes that always sound good."
+                                    : "Tap a note to load it (orange ring), then point at the stave and pull the trigger. Or drag it.";
                     var values = beginner ? new[] { Duration.Whole, Duration.Half, Duration.Quarter, Duration.Eighth }
                                           : new[] { Duration.Whole, Duration.Half, Duration.Quarter, Duration.Eighth, Duration.Sixteenth };
                     foreach (var v in values) { var vv = v; tiles.Add(r => NoteTile(r, vv, false, false)); }
@@ -747,9 +829,16 @@ namespace VRComposer
                 holder.anchoredPosition = new Vector2(dotted ? -6 : 0, d == Duration.Whole ? 0 : -1.6f * ls);
                 Engraver.Note(holder, new Note { duration = d, step = 2, dotted = dotted }, ls, UIFactory.Ink, false);
             }
+            var q = QuickEntry.Instance;
+            if (q != null && q.IsLoaded(d, rest, dotted))
+            {
+                var ring = UIFactory.Img(cell, "Loaded ring", UIFactory.Orange, UIFactory.Rounded);
+                UIFactory.Stretch(ring.rectTransform, -5, -5, -5, -5);
+                ring.transform.SetAsFirstSibling();
+            }
             var src = bg.gameObject.AddComponent<DragSource>();
-            src.payloadFactory = () => new DragPayload { kind = rest ? DragKind.Rest : DragKind.Note, duration = d, dotted = dotted };
-            src.onTap = () => TapNote(d, rest, dotted);
+            src.payloadFactory = () => { var qq = QuickEntry.Instance; if (qq != null) qq.Load(d, rest, dotted); return new DragPayload { kind = rest ? DragKind.Rest : DragKind.Note, duration = d, dotted = dotted }; };
+            src.onTap = () => { var qq = QuickEntry.Instance; if (qq != null) qq.Load(d, rest, dotted); else TapNote(d, rest, dotted); };
         }
 
         private void SymbolTile(RectTransform cell, SymbolKind k)
@@ -1092,7 +1181,18 @@ namespace VRComposer
             UIFactory.PlaceTopLeft((RectTransform)wristTheme.transform, 12, -156, 276, 60);
         }
 
-        private static Transform FindLeftHand()
+        public static Transform FindRightHand()
+        {
+            string[] names = { "Right Controller", "RightHand Controller", "Right Hand", "RightHand", "Right Hand Interaction Visual" };
+            foreach (var n in names)
+            {
+                var go = GameObject.Find(n);
+                if (go != null) return go.transform;
+            }
+            return null;
+        }
+
+        public static Transform FindLeftHand()
         {
             string[] names = { "Left Controller", "LeftHand Controller", "Left Hand", "LeftHand", "Left Hand Interaction Visual" };
             foreach (var n in names)

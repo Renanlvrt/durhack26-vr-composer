@@ -39,15 +39,20 @@ namespace VRComposer
         /// time is taken out, so the playhead waits on the held note instead of running ahead).</summary>
         public float PositionBeats
         {
-            get
-            {
-                lock (gate)
-                {
-                    if (samplesPerBeat <= 0) return 0f;
-                    float perf = (float)(samplePos / samplesPerBeat);
-                    return timeMap != null ? timeMap.Ticks(perf) / 4f : perf;
-                }
-            }
+            // No lock: the audio thread holds the lock while it renders a whole buffer, and the
+            // panels, playhead and musicians read this several times per frame. It is updated
+            // after each audio buffer (the same rate the position advanced at before).
+            get { return positionCache; }
+        }
+
+        private volatile float positionCache;
+
+        // call with the gate held
+        private void UpdatePositionCache()
+        {
+            if (samplesPerBeat <= 0) { positionCache = 0f; return; }
+            float perf = (float)(samplePos / samplesPerBeat);
+            positionCache = timeMap != null ? timeMap.Ticks(perf) / 4f : perf;
         }
 
         /// <summary>Raised on the main thread when a non-looping playback reaches the end.</summary>
@@ -58,6 +63,7 @@ namespace VRComposer
 
         private struct StartedNote { public int staff, key; public float seconds; }
         private readonly List<StartedNote> startedNotes = new List<StartedNote>();
+        private readonly object noteGate = new object();   // small lock for startedNotes only
         private readonly List<StartedNote> startedScratch = new List<StartedNote>();
 
         private const int PreviewChannel = 15;
@@ -183,6 +189,7 @@ namespace VRComposer
                 samplesPerBeat = spb;
                 timeMap = map;
                 samplePos = 0;
+                UpdatePositionCache();
                 evIndex = 0;
                 ApplyProgramsLocked();
                 synth.NoteOffAll(false);
@@ -197,6 +204,7 @@ namespace VRComposer
             {
                 playing = false;
                 samplePos = 0;
+                UpdatePositionCache();
                 evIndex = 0;
                 if (synth != null) synth.NoteOffAll(false);
             }
@@ -263,6 +271,7 @@ namespace VRComposer
                 timeMap = map;
                 samplePos = (long)(map.Beats((float)tick) * spb);
                 if (samplePos >= endSample) samplePos = 0;
+                UpdatePositionCache();
                 evIndex = 0;
                 while (evIndex < events.Count && events[evIndex].sample < samplePos) evIndex++;
                 synth.NoteOffAll(false); // a deleted note must not keep ringing
@@ -359,9 +368,9 @@ namespace VRComposer
 
         private void Update()
         {
-            lock (gate)
+            startedScratch.Clear();
+            lock (noteGate)
             {
-                startedScratch.Clear();
                 startedScratch.AddRange(startedNotes);
                 startedNotes.Clear();
             }
@@ -417,7 +426,7 @@ namespace VRComposer
                             if (e.on)
                             {
                                 synth.NoteOn(e.channel, e.key, e.velocity);
-                                if (e.staff >= 0 && startedNotes.Count < 64) startedNotes.Add(new StartedNote { staff = e.staff, key = e.key, seconds = e.seconds });
+                                if (e.staff >= 0) lock (noteGate) { if (startedNotes.Count < 64) startedNotes.Add(new StartedNote { staff = e.staff, key = e.key, seconds = e.seconds }); }
                             }
                             else synth.NoteOff(e.channel, e.key);
                         }
@@ -428,11 +437,13 @@ namespace VRComposer
                             {
                                 synth.NoteOffAll(false);
                                 samplePos = 0;
+                UpdatePositionCache();
                                 evIndex = 0;
                                 continue;
                             }
                             playing = false;
                             samplePos = 0;
+                UpdatePositionCache();
                             evIndex = 0;
                             synth.NoteOffAll(false);
                             finishedFlag = true;
@@ -449,6 +460,7 @@ namespace VRComposer
                     if (playing) samplePos += chunk;
                 }
                 clock += frames;
+                UpdatePositionCache();
             }
 
             float v = volume;

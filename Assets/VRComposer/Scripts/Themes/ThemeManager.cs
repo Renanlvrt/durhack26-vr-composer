@@ -329,6 +329,10 @@ namespace VRComposer
                     float side = pos.x <= 0f ? 1f : -1f;
                     look = pos + new Vector3(side, 0f, -0.35f);
                     if (role == Role.Piano) pos += new Vector3(-side * 0.5f, 0f, 0.3f);
+                    // big instruments sit further back, away from you, so they don't poke through the score panels
+                    var away = new Vector3(pos.x, 0f, pos.z);
+                    if (away.sqrMagnitude > 0.01f) pos += away.normalized * (role == Role.Piano ? 1.1f : 0.7f);
+                    look = pos + new Vector3(side, 0f, -0.35f);
                 }
                 var outfit = venue.jazzOutfits ? Outfit.Jazz(si + 4) : Outfit.ConcertBlack(si * 3 + 2);
                 var m = Musician.Create(venue.dynamicRoot, staff.name, role, outfit, pos, look, !Roles.Stands(role), true);

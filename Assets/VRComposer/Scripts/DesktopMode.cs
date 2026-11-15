@@ -54,23 +54,44 @@ namespace VRComposer
         private void Start()
         {
             EnableMouseUI();
-            checkUntil = Time.unscaledTime + 3f;   // the headset can take a moment to start
+            checkUntil = Time.unscaledTime + 5f;   // the headset can take a moment to start
         }
 
+        /// <summary>VR first: a headset counts as present if an XR display runs or a head-mounted
+        /// device is tracked.</summary>
         private static bool HeadsetActive()
         {
             var displays = new List<UnityEngine.XR.XRDisplaySubsystem>();
             SubsystemManager.GetSubsystems(displays);
             foreach (var d in displays) if (d.running) return true;
+            var heads = new List<UnityEngine.XR.InputDevice>();
+            UnityEngine.XR.InputDevices.GetDevicesWithCharacteristics(UnityEngine.XR.InputDeviceCharacteristics.HeadMounted, heads);
+            foreach (var h in heads) if (h.isValid) return true;
             return false;
         }
+
+        /// <summary>An OpenXR loader is running (Link is starting up): give it longer before falling back.</summary>
+        private static bool XRLoaderActive()
+        {
+            var s = UnityEngine.XR.Management.XRGeneralSettings.Instance;
+            return s != null && s.Manager != null && s.Manager.activeLoader != null;
+        }
+
+        private float nextHeadsetCheck;
 
         private void Update()
         {
             if (!Active)
             {
-                if (forceDesktop || (Time.unscaledTime > checkUntil && !HeadsetActive())) Activate();
+                if (forceDesktop) Activate();
+                else if (Time.unscaledTime > checkUntil && !HeadsetActive() && (!XRLoaderActive() || Time.unscaledTime > checkUntil + 10f)) Activate();
                 else return;
+            }
+            // the headset came on later (Link connected): back to VR
+            if (!forceDesktop && Time.unscaledTime > nextHeadsetCheck)
+            {
+                nextHeadsetCheck = Time.unscaledTime + 1f;
+                if (HeadsetActive()) { Deactivate(); return; }
             }
             if (cam == null) return;
             var kb = Keyboard.current;
@@ -100,12 +121,30 @@ namespace VRComposer
             }
         }
 
+        private void Deactivate()
+        {
+            Active = false;
+            var c = cam != null ? cam.GetComponent<Camera>() : Camera.main;
+            if (c != null)
+                foreach (var b in c.GetComponents<Behaviour>())
+                    if (b != null && b.GetType().Name == "TrackedPoseDriver") b.enabled = true;
+            if (cam != null && savedLocal.HasValue) { cam.localPosition = savedLocal.Value; cam.localRotation = Quaternion.identity; }
+            cam = null;
+            checkUntil = float.MaxValue;   // stay in VR from now on (unless forced)
+            Debug.Log("[VRComposer] Headset found: back to VR.");
+            var app = VRComposerApp.Instance;
+            if (app != null) app.Recenter();
+        }
+
+        private Vector3? savedLocal;
+
         private void Activate()
         {
             Active = true;
             var c = Camera.main;
             if (c == null) { Debug.LogWarning("[VRComposer] Desktop mode: no MainCamera."); return; }
             cam = c.transform;
+            savedLocal = cam.localPosition;
             // the tracked pose driver would hold the camera where the (absent) headset is
             foreach (var b in c.GetComponents<Behaviour>())
                 if (b != null && b.GetType().Name == "TrackedPoseDriver") b.enabled = false;

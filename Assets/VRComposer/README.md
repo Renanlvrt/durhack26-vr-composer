@@ -109,11 +109,34 @@ compensate.
 | Inspector (right) | mode, place, key, time signature, tempo, bars, backing band, instruments |
 | Transport (under the score) | Play/Stop, Loop, Undo, Clear, Recenter, **Hide/Show** (score, palette and inspector), bar/beat |
 | Wrist menu (left hand) | Play/Stop, Hide/Show panels, Mode, Recenter, Place |
-| Right controller | A = Play/Stop, B = deselect, thumbstick = nudge selected note |
+| Right controller | **Trigger on the stave = place the loaded note**, hold **A** = instrument wheel, **B** = lock, thumbstick = nudge the selected note (or move the locked ghost) |
+| Left controller | hold **X** = note wheel, **Y** = close the wheel / deselect |
 | Either thumbstick click | Recenter: panels (and the venue) move in front of you |
-| Keyboard (editor) | Space = Play/Stop, arrows = nudge, Esc = deselect, R = recenter |
+| Keyboard (editor) | Space = Play/Stop, arrows = nudge, Esc = deselect, R = recenter, hold N / I = note / instrument wheel (arrows or mouse wheel to step), L = lock, Enter = place while locked |
 
 Set `paletteOnLeft = false` on the VR Composer object to swap the side panels.
+
+### Quick entry (no need for the left panel)
+
+- A note value is always **loaded**: 1/8 to start. Point the right ray at the stave and its ghost
+  follows; pull the trigger and it is placed there. It stays loaded, so the next trigger places
+  another one. Tapping a note tile on the palette (orange ring = loaded) or using the note wheel
+  loads a different value. Dragging still works.
+- **Note wheel** (hold X, left wrist): whole, half, 1/4, 1/8, 1/16, Dot, Symbols (Beginner: the
+  first four). Twist your wrist about 30 degrees per slice (it loops round; keep it turned to keep
+  going), the yellow slice is the choice, release X to take it. Symbols opens a second ring
+  (sharp, flat, natural, staccato, accent, tie, clear): hold X again, twist, release. A symbol goes
+  on the selected note (the one you just placed), or on the next note if none is selected.
+- **Instrument wheel** (hold A, right wrist): your instruments plus "+ Add". Release on one to
+  write on it. "+ Add" shows the families, then that family's instruments (hold A again each time);
+  the new instrument is added, selected, and a musician joins the band.
+- **Lock** (B): the ghost freezes on the stave, so you can lower your arm. Right stick up/down =
+  pitch, left/right = beat. Trigger places it and the ghost moves on to the next beat (a bar is
+  added at the end if needed). B unlocks.
+- Y closes a wheel, or deselects the selected note. Play / Stop is on the panels (Space on the
+  keyboard); A no longer plays.
+- If twisting right moves the wheel the wrong way, tick **Invert Twist** on the Quick Entry
+  component; **Twist Step Degrees** sets how big a twist each slice needs.
 
 ## Places
 
