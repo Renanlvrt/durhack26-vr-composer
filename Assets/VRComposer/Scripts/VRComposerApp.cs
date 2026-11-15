@@ -33,6 +33,8 @@ namespace VRComposer
         [Tooltip("Hide the VR template's tutorial props (Interactables, CoachingCardRoot).")]
         public bool hideTemplateProps = true;
         public bool showWelcome = true;
+        [Tooltip("Mouse + keyboard instead of the headset. Turns on by itself when no headset is running.")]
+        public bool forceDesktopMode = false;
         [Tooltip("Open the Beethoven 5 string quartet demo when the score is empty: on choosing Advanced on the welcome screen, or at start when the welcome screen is off.")]
         public bool loadDemoOnAdvanced = true;
         public bool followPlayhead = true;
@@ -112,6 +114,9 @@ namespace VRComposer
             MigrateLayout();
             ApplyVenueOptions();
             EnsureEventSystem();
+            DesktopMode.EnableMouseUI();
+            var desktop = gameObject.GetComponent<DesktopMode>() ?? gameObject.AddComponent<DesktopMode>();
+            desktop.forceDesktop = forceDesktopMode;
 
             Score = new Score();
             Score.AddStaff(Instruments.Find("Flute"));

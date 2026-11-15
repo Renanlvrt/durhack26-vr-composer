@@ -79,6 +79,7 @@ namespace VRComposer
             var scaler = go.AddComponent<CanvasScaler>();
             scaler.dynamicPixelsPerUnit = 2f;
             go.AddComponent<TrackedDeviceGraphicRaycaster>(); // XR rays + poke
+            go.AddComponent<MouseGraphicRaycaster>();         // mouse in the game view (desktop testing)
             return canvas;
         }
 

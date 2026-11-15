@@ -13,6 +13,24 @@ the chords you placed.
    materials in `Resources/VRComposerMaterials` so the venues don't render pink in builds.
 4. Press Play with Quest Link, or Build And Run for Android.
 
+### Without a headset (desktop mode)
+
+Press Play with Quest Link off (or tick **Force Desktop Mode** on the VR Composer object). After
+about 3 seconds with no headset running, the app switches to mouse and keyboard:
+
+| Input | Does |
+|---|---|
+| Left click / drag | Use the panels exactly like the VR ray: tap tiles, drag notes onto the stave, drag a note off to delete |
+| Hold right mouse + move | Look around |
+| W A S D, Q / E, Shift | Move, down / up, faster |
+| R | Bring the panels in front of you |
+| Space | Play / stop |
+| Arrow keys | Nudge the selected note (pitch / time) |
+| Esc | Deselect |
+| H | Hide the help box |
+
+The mouse also works in the game view while the headset is on, which is handy for quick edits.
+
 A welcome panel asks for a place and a mode. You can change both later from the inspector or
 the wrist menu, and your score is kept.
 
