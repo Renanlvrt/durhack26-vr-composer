@@ -117,11 +117,20 @@ Set `paletteOnLeft = false` on the VR Composer object to swap the side panels.
 
 ## Places
 
-Golden Hall (the default), Recital Room, Jazz Club and Cathedral. Each venue has its own reverb and
-its own musicians who play along with your notes. In Beginner mode the venue's band instrument
-plays your melody until you pick an instrument yourself. After a full play-through (Loop off) the
-musicians bow. While the music plays, the score and side panels hide so you can watch the band
-(`hidePanelsWhilePlaying`).
+Golden Hall (the default), Recital Room, Jazz Club and Cathedral. Each venue has its own reverb.
+
+**Your band is on stage.** Every instrument in your score gets its own musician: add a piano and a
+pianist with a grand piano appears, add a flute and a flautist joins. Each one plays only their
+own staff (bows change direction on each note, the marimba player follows the melody along the
+bars, the singer's mouth opens). The Beethoven demo puts a string quartet on stage. Pianos, harps
+and marimbas sit at the ends of the row. Where they play:
+- Golden Hall: the front arc around your podium; the string orchestra behind plays along.
+- Recital Room: on the stage. Jazz Club: front of the bandstand, with bass and drums behind.
+- Cathedral: in front of the altar candles.
+
+In Beginner mode the venue's instrument plays your melody until you pick one yourself. After a full
+play-through (Loop off) the musicians bow. Play never hides the panels: use **Hide** on the
+transport (or the wrist menu) when you want to watch the band.
 
 To keep the frame rate up on Quest Link, the audience, the applause and the background crowd sound
 are off. The code is kept: tick **Show Audience**, **Venue Ambience** or **Applause** on the VR

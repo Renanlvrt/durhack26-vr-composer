@@ -12,6 +12,32 @@ namespace VRComposer
         public readonly List<Musician> players = new List<Musician>();
         public readonly List<Musician> audience = new List<Musician>();
         public Color ambient;
+
+        // Where your score's instruments play (one musician per staff), in venue space.
+        // Arc: around the user at the origin. Row: a straight line on a stage facing bandLookAt.
+        public bool bandArc;
+        public float bandRadius = 2f, bandSpacingDeg = 30f;       // arc
+        public float bandZ = 3f, bandSpacing = 0.95f, bandCurve = 0.25f, bandY;   // row
+        public Vector3 bandLookAt = Vector3.zero;
+        public bool jazzOutfits;
+        public Transform dynamicRoot;
+
+        /// <summary>Position and facing of player i of n in your band.</summary>
+        public void BandSlot(int i, int n, out Vector3 pos, out Vector3 lookAt)
+        {
+            float c = i - (n - 1) * 0.5f;
+            if (bandArc)
+            {
+                float ang = c * bandSpacingDeg * Mathf.Deg2Rad;
+                pos = new Vector3(Mathf.Sin(ang) * bandRadius, bandY, Mathf.Cos(ang) * bandRadius + 0.2f);
+            }
+            else
+            {
+                float x = c * bandSpacing;
+                pos = new Vector3(x, bandY, bandZ - Mathf.Abs(x) * bandCurve);
+            }
+            lookAt = bandLookAt;
+        }
     }
 
     /// Builds each performance venue around the user (user stands at the origin, facing +Z).
@@ -59,6 +85,7 @@ namespace VRComposer
             info.root.transform.SetParent(stage, false);
             var stat = VRComposer.Build.Child(info.root.transform, "Static architecture", Vector3.zero).transform;
             var dyn = info.root.transform;
+            info.dynamicRoot = dyn;
             switch (id)
             {
                 case VenueId.GoldenHall: GoldenHall(info, stat, dyn); break;
@@ -106,9 +133,11 @@ namespace VRComposer
             for (int r = 0; r < 6; r++) for (int c = -6; c <= 6; c++) P(PrimitiveType.Cube, s, "Seat", new Vector3(c * 0.62f, 0.25f, -3f - r * 1.0f), new Vector3(0.5f, 0.5f, 0.5f), red);
 
             AddLight(d, LightType.Directional, Vector3.zero, new Vector3(50, 20, 0), new Color(1f, 0.93f, 0.8f), 0.9f);
-            // string orchestra: violins left, cellos right in two arcs around the podium, basses at the back
+            // Your instruments sit in the front arc around the podium (ThemeManager adds them);
+            // the string orchestra behind them (back arc and basses) plays along with everything.
+            info.bandArc = true; info.bandRadius = 1.9f; info.bandSpacingDeg = 32f;
             int idx = 0;
-            foreach (var (r, a0, a1, n, role) in new (float, float, float, int, Role)[] { (1.9f, -70, -8, 4, Role.Violin), (1.9f, 12, 70, 3, Role.Cello), (3.2f, -60, -12, 4, Role.Violin), (3.2f, 12, 55, 3, Role.Violin) })
+            foreach (var (r, a0, a1, n, role) in new (float, float, float, int, Role)[] { (3.2f, -60, -12, 4, Role.Violin), (3.2f, 12, 55, 3, Role.Cello) })
                 for (int i = 0; i < n; i++)
                 {
                     float ang = Mathf.Lerp(a0, a1, n == 1 ? 0.5f : i / (float)(n - 1)) * Mathf.Deg2Rad;
@@ -136,13 +165,8 @@ namespace VRComposer
             for (int r = 0; r < 7; r++) for (int c = -5; c <= 5; c++) if (!(r == 0 && Mathf.Abs(c) < 1)) P(PrimitiveType.Cube, s, "Seat", new Vector3(c * 0.6f, 0.22f, -0.2f - r * 0.95f), new Vector3(0.48f, 0.44f, 0.48f), new Color(0.45f, 0.1f, 0.12f));
             AddLight(d, LightType.Directional, Vector3.zero, new Vector3(45, -15, 0), new Color(1f, 0.9f, 0.75f), 0.75f);
             AddLight(d, LightType.Spot, new Vector3(0, 5.5f, 1.5f), new Vector3(60, 0, 0), new Color(1f, 0.92f, 0.8f), 2.2f, 9f, 55f);
-            // quartet in a shallow arc facing the audience
-            var quartet = new (Role, float)[] { (Role.Violin, -1.4f), (Role.Violin, -0.5f), (Role.Violin, 0.5f), (Role.Cello, 1.4f) };
-            for (int i = 0; i < 4; i++)
-            {
-                var pos = new Vector3(quartet[i].Item2, 0.6f, 3.6f + Mathf.Abs(quartet[i].Item2) * -0.25f);
-                info.players.Add(Musician.Create(d, i == 2 ? "Viola" : quartet[i].Item1.ToString(), quartet[i].Item1, Outfit.ConcertBlack(i + 5), pos, new Vector3(0, 0, 1.6f), true, true));
-            }
+            // your instruments in a shallow arc on the stage, facing the hall (a string quartet for the Beethoven demo)
+            info.bandY = 0.6f; info.bandZ = 3.6f; info.bandSpacing = 0.95f; info.bandCurve = 0.25f; info.bandLookAt = new Vector3(0, 0, 1.6f);
             for (int i = 0; i < 8; i++) { float x = (i < 4 ? -1 : 1) * (0.6f + (i % 4) * 0.6f); if (ShowAudience) info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i + 3), new Vector3(x, 0.02f, -0.2f), new Vector3(x, 0, 5), true, false)); }
         }
 
@@ -176,11 +200,10 @@ namespace VRComposer
             AddLight(d, LightType.Directional, Vector3.zero, new Vector3(60, 0, 0), new Color(0.6f, 0.35f, 0.3f), 0.25f);
             AddLight(d, LightType.Spot, new Vector3(-1.5f, 3.8f, 1.5f), new Vector3(60, 20, 0), new Color(1f, 0.75f, 0.45f), 3f, 8f, 45f);
             AddLight(d, LightType.Spot, new Vector3(1.5f, 3.8f, 1.5f), new Vector3(60, -20, 0), new Color(0.85f, 0.55f, 1f), 2f, 8f, 45f);
-            // the band: sax takes your melody; piano, bass and drums groove along
-            info.players.Add(Musician.Create(d, "Saxophone (lead)", Role.Saxophone, Outfit.Jazz(0), new Vector3(0, 0.3f, 2.9f), User, false, true));
-            info.players.Add(Musician.Create(d, "Pianist", Role.Piano, Outfit.Jazz(1), new Vector3(-1.8f, 0.3f, 3.0f), new Vector3(-3.6f, 0, 3.6f), true, false));
-            info.players.Add(Musician.Create(d, "Double bass", Role.DoubleBass, Outfit.Jazz(2), new Vector3(1.2f, 0.3f, 3.9f), User, false, false));
-            info.players.Add(Musician.Create(d, "Drums", Role.Drums, Outfit.Jazz(3), new Vector3(2.0f, 0.3f, 3.6f), new Vector3(0, 0, 1), true, false));
+            // your instruments at the front of the bandstand; bass and drums groove along behind
+            info.bandY = 0.3f; info.bandZ = 2.9f; info.bandSpacing = 0.85f; info.bandCurve = 0.1f; info.jazzOutfits = true;
+            info.players.Add(Musician.Create(d, "Double bass", Role.DoubleBass, Outfit.Jazz(2), new Vector3(1.0f, 0.3f, 4.1f), User, false, false));
+            info.players.Add(Musician.Create(d, "Drums", Role.Drums, Outfit.Jazz(3), new Vector3(1.9f, 0.3f, 4.0f), new Vector3(0, 0, 1), true, false));
         }
 
         // ------------------------------------------------------------------
@@ -214,10 +237,8 @@ namespace VRComposer
             for (int r = 0; r < 6; r++) for (int side = -1; side <= 1; side += 2) P(PrimitiveType.Cube, s, "Pew", new Vector3(1.6f * side, 0.45f, -1.5f - r * 1.2f), new Vector3(2.4f, 0.9f, 0.45f), new Color(0.32f, 0.18f, 0.09f));
             for (int i = 0; i < 6; i++) P(PrimitiveType.Cylinder, s, "Candle", new Vector3(-2.5f + i, 1.1f, 6), new Vector3(0.06f, 0.3f, 0.06f), new Color(1f, 0.95f, 0.85f), default, true);
             AddLight(d, LightType.Directional, Vector3.zero, new Vector3(35, -30, 0), new Color(0.95f, 0.9f, 0.85f), 0.8f);
-            // brass quintet: trumpets and trombone stand, horn and tuba sit
-            var q = new (Role role, float x, bool sit)[] { (Role.Trumpet, -1.6f, false), (Role.Trumpet, -0.8f, false), (Role.Horn, 0f, true), (Role.Trombone, 0.8f, false), (Role.Tuba, 1.6f, true) };
-            for (int i = 0; i < q.Length; i++)
-                info.players.Add(Musician.Create(d, q[i].role.ToString(), q[i].role, Outfit.ConcertBlack(i + 11), new Vector3(q[i].x, 0, 3.0f - Mathf.Abs(q[i].x) * 0.3f), User, q[i].sit, i == 0 || i == 1 || i == 3));
+            // your instruments in front of the altar candles
+            info.bandY = 0f; info.bandZ = 3.0f; info.bandSpacing = 0.9f; info.bandCurve = 0.3f;
             for (int i = 0; i < 8; i++) { float x = (i < 4 ? -1 : 1) * (0.7f + (i % 4) * 0.55f); if (ShowAudience) info.audience.Add(Musician.Create(d, "Audience", Role.Audience, Outfit.Casual(i + 21), new Vector3(x, 0.02f, -1.9f), new Vector3(x, 0, 5), true, false)); }
         }
     }

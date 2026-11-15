@@ -37,6 +37,11 @@ namespace VRComposer
         private bool origFog;
         private int lastBeat = -1;
 
+        // your band: one musician per staff of the score, rebuilt when instruments change
+        private readonly List<Musician> band = new List<Musician>();
+        private readonly List<int> bandStaff = new List<int>();
+        private string bandSignature = "";
+
         public static string Title(VenueId v)
         {
             return v == VenueId.Studio ? "Studio" : Venues.Describe(v).title;
@@ -62,6 +67,7 @@ namespace VRComposer
             stage = new GameObject("VR Composer Venue Stage").transform;
             app.Player.NoteStarted += OnNoteStarted;
             app.Player.Finished += OnFinished;
+            app.Score.Changed += OnScoreChanged;
         }
 
         private void OnDestroy()
@@ -71,6 +77,7 @@ namespace VRComposer
                 app.Player.NoteStarted -= OnNoteStarted;
                 app.Player.Finished -= OnFinished;
             }
+            if (app != null && app.Score != null) app.Score.Changed -= OnScoreChanged;
         }
 
         public void Next() { Set(Order[(System.Array.IndexOf(Order, Current) + 1) % Order.Length]); }
@@ -89,6 +96,7 @@ namespace VRComposer
             try
             {
                 if (venue != null) { Destroy(venue.root); venue = null; }
+                band.Clear(); bandStaff.Clear(); bandSignature = "";
                 RestoreScene();
                 Current = id;
 
@@ -97,6 +105,7 @@ namespace VRComposer
                     PlaceStage();
                     HideScene();
                     venue = Venues.Create(id, stage);
+                    RebuildBand();
                     RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
                     RenderSettings.ambientLight = venue.ambient;
                     SetIndoorBackground(venue.ambient * 0.3f);
@@ -275,9 +284,64 @@ namespace VRComposer
             if (to <= 0f) fader.SetActive(false);
         }
 
+        private void OnScoreChanged()
+        {
+            if (venue != null && Signature() != bandSignature) RebuildBand();
+        }
+
+        private string Signature()
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var st in app.Score.staves) sb.Append(st.program).Append(',');
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// One musician per instrument in your score, on the venue's band row: add a piano and a
+        /// pianist walks on. Big instruments (piano, harp, marimba) take the ends of the row.
+        /// </summary>
+        private void RebuildBand()
+        {
+            foreach (var m in band) if (m != null) Destroy(m.gameObject);
+            band.Clear();
+            bandStaff.Clear();
+            bandSignature = Signature();
+            if (venue == null || venue.dynamicRoot == null) return;
+
+            var staves = app.Score.staves;
+            int n = staves.Count;
+            // seat order: big instruments at the ends, the rest in score order (Violin I on the left)
+            var order = new List<int>();
+            var big = new List<int>();
+            for (int i = 0; i < n; i++) (Roles.IsBig(Roles.ForProgram(staves[i].program)) ? big : order).Add(i);
+            for (int k = 0; k < big.Count; k++) { if (k % 2 == 0) order.Insert(0, big[k]); else order.Add(big[k]); }
+
+            for (int slot = 0; slot < order.Count; slot++)
+            {
+                int si = order[slot];
+                var staff = staves[si];
+                var role = Roles.ForProgram(staff.program);
+                Vector3 pos, look;
+                venue.BandSlot(slot, n, out pos, out look);
+                // keyboards, harp and marimba turn side-on so the instrument doesn't hide the others
+                if (Roles.IsBig(role))
+                {
+                    float side = pos.x <= 0f ? 1f : -1f;
+                    look = pos + new Vector3(side, 0f, -0.35f);
+                    if (role == Role.Piano) pos += new Vector3(-side * 0.5f, 0f, 0.3f);
+                }
+                var outfit = venue.jazzOutfits ? Outfit.Jazz(si + 4) : Outfit.ConcertBlack(si * 3 + 2);
+                var m = Musician.Create(venue.dynamicRoot, staff.name, role, outfit, pos, look, !Roles.Stands(role), true);
+                band.Add(m);
+                bandStaff.Add(si);
+            }
+        }
+
         private void OnNoteStarted(int staff, int key, float seconds)
         {
             if (venue == null) return;
+            // each of your musicians plays their own staff; the venue's ensemble plays along with everything
+            for (int i = 0; i < band.Count; i++) if (band[i] != null && bandStaff[i] == staff) band[i].OnNote(key, seconds);
             foreach (var m in venue.players) if (m != null && m.playing) m.OnNote(key, seconds);
         }
 
@@ -288,6 +352,7 @@ namespace VRComposer
             try { len = venueAudio.PlayApplause(); } catch (System.Exception e) { Debug.LogWarning(e); }
             foreach (var a in venue.audience) if (a != null) a.Applaud(len * 0.8f);
             foreach (var m in venue.players) if (m != null) m.TakeBow();
+            foreach (var m in band) if (m != null) m.TakeBow();
         }
 
         private void Update()
@@ -301,6 +366,7 @@ namespace VRComposer
             {
                 lastBeat = beat;
                 foreach (var m in venue.players) if (m != null) m.OnBeat(beat);
+                foreach (var m in band) if (m != null) m.OnBeat(beat);
                 foreach (var m in venue.audience) if (m != null) m.OnBeat(beat);
             }
         }

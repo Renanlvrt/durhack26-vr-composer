@@ -46,8 +46,6 @@ namespace VRComposer
         public bool venueAmbience = false;
         [Tooltip("Applause at the end of a full play-through.")]
         public bool applause = false;
-        [Tooltip("In a venue, hide the score and side panels while the music plays so you watch the musicians. Only the transport (Stop) stays.")]
-        public bool hidePanelsWhilePlaying = true;
 
         [Header("Wrist menu")]
         public bool createWristMenu = true;
@@ -97,7 +95,6 @@ namespace VRComposer
         private TextMeshProUGUI positionText, paletteHint;
         private string paletteTab = "Notes";
         private bool panelsVisible = true, started;
-        private bool performing;   // music playing in a venue with the composition hidden
         private Vector3 layoutHead, layoutFwd;
         private float lastScoreHeight;
 
@@ -194,7 +191,7 @@ namespace VRComposer
         {
             started = on;
             welcomeCanvas.gameObject.SetActive(!on);
-            bool composing = on && panelsVisible && !performing;
+            bool composing = on && panelsVisible;   // only the Hide button hides the panels, never Play
             scoreCanvas.gameObject.SetActive(composing);
             paletteCanvas.gameObject.SetActive(composing);
             inspectorCanvas.gameObject.SetActive(composing);
@@ -462,12 +459,6 @@ namespace VRComposer
         {
             HandleNudge();
             bool playing = Player.IsPlaying;
-            bool perform = hidePanelsWhilePlaying && playing && started && Themes != null && Themes.Current != VenueId.Studio;
-            if (perform != performing)
-            {
-                performing = perform;
-                ShowComposer(started);   // the transport stays, so Stop is always there
-            }
             UIFactory.SetButton(playButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
             UIFactory.SetButton(View.PlayButton, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
             UIFactory.SetButton(wristPlay, playing ? "Stop" : "Play", playing ? UIFactory.Red : UIFactory.Green);
