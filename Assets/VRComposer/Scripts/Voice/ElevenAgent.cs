@@ -72,7 +72,26 @@ namespace VRComposer.Voice
         /// <summary>Stops the agent's voice (a singing take is starting).</summary>
         public void Hush() { StopPlayback(); }
 
-        private void SetStatus(string s) { lastStatus = s; StatusChanged?.Invoke(s); }
+        private void SetStatus(string s)
+        {
+            if (s != lastStatus) Debug.Log("[VRComposer] Composer status: " + s);
+            lastStatus = s;
+            StatusChanged?.Invoke(s);
+        }
+
+        // what was said in this push-to-talk turn (for "didn't hear you" feedback)
+        private float talkPeak, talkSeconds, releasedAt = -1f;
+        private bool awaitingHeard;
+        [Tooltip("Seconds after releasing Y without any transcript before telling the user nothing was heard.")]
+        public float heardTimeoutSeconds = 8f;
+
+        private void Measure(float[] s)
+        {
+            for (int i = 0; i < s.Length; i++) { float a = Math.Abs(s[i]); if (a > talkPeak) talkPeak = a; }
+            talkSeconds += s.Length / (float)MicRecorder.Rate;
+        }
+
+        private static string Db(float peak) { return peak > 0 ? Mathf.RoundToInt(20f * Mathf.Log10(peak)) + " dB" : "silence"; }
 
         // ================================================================== push-to-talk
 
@@ -91,7 +110,8 @@ namespace VRComposer.Voice
                 Talking = true;
                 lastActivity = Time.unscaledTime;
                 micAcc.Clear();
-                foreach (var p in preroll) micAcc.AddRange(p);      // the first syllable said while pressing
+                talkPeak = 0f; talkSeconds = 0f; awaitingHeard = false;
+                foreach (var p in preroll) { micAcc.AddRange(p); Measure(p); }      // the first syllable said while pressing
                 preroll.Clear(); prerollSamples = 0;
                 mic.Chunk += OnMic;
                 SetStatus("Listening... (release Y when done)");
@@ -105,7 +125,12 @@ namespace VRComposer.Voice
                 var silence = new float[MicRecorder.Rate / 5];
                 for (int i = 0; i < 4; i++) SendAudio(silence);
                 lastActivity = Time.unscaledTime;
-                SetStatus("Thinking...");
+                releasedAt = Time.unscaledTime;
+                awaitingHeard = true;
+                Debug.Log("[VRComposer] Push-to-talk released: " + talkSeconds.ToString("0.0") + " s from " + MicRecorder.ShortName(mic.CurrentDevice) + ", peak " + Db(talkPeak) + (Connected ? "" : " (still connecting)"));
+                if (talkPeak < 0.003f)   // about -50 dB: the mic gave (almost) nothing
+                    SetStatus("Your mic sent " + Db(talkPeak) + ": tap the Mic button to switch, then hold Y again");
+                else SetStatus("Thinking...");
             }
         }
 
@@ -120,6 +145,7 @@ namespace VRComposer.Voice
 
         private void OnMic(float[] s, long start)
         {
+            Measure(s);
             micAcc.AddRange(s);
             if (micAcc.Count >= MicRecorder.Rate / 10) FlushMic();   // 100 ms packets
         }
@@ -272,6 +298,13 @@ namespace VRComposer.Voice
             while (inbox.TryDequeue(out msg)) { lastActivity = Time.unscaledTime; Handle(msg); }
             if (Speaking) { lastSpoke = Time.unscaledTime; lastActivity = Time.unscaledTime; }
             if (Talking) lastActivity = Time.unscaledTime;
+            if (awaitingHeard && !Talking && Time.unscaledTime - releasedAt > heardTimeoutSeconds)
+            {
+                awaitingHeard = false;
+                SetStatus(Connected
+                    ? "The composer heard nothing (mic peak " + Db(talkPeak) + "). Hold Y, speak, then release"
+                    : "Could not reach the composer (check the internet), hold Y to retry");
+            }
             // an idle open conversation can re-engage on its own (and keeps a session running): close it
             if (Connected && !Talking && Time.unscaledTime - lastActivity > idleCloseSeconds) Close();
         }
@@ -299,11 +332,14 @@ namespace VRComposer.Voice
                     int rate;
                     if (fmt != null && fmt.StartsWith("pcm_") && int.TryParse(fmt.Substring(4), out rate) && rate != outRate) { outRate = rate; source = null; }
                     EnsureSource();
-                    if (!Talking) SetStatus("Composer ready: hold Y and ask");
+                    Debug.Log("[VRComposer] Composer connected (" + (fmt ?? "?") + ")");
+                    if (!Talking && !awaitingHeard) SetStatus("Composer ready: hold Y and ask");
                     break;
                 case "user_transcript":
                     var said = (string)j["user_transcription_event"]?["user_transcript"];
-                    if (!string.IsNullOrEmpty(said)) SetStatus("You: " + said);
+                    awaitingHeard = false;
+                    if (string.IsNullOrWhiteSpace(said) || said.Trim() == "...") SetStatus("Didn't catch that (mic peak " + Db(talkPeak) + "). Hold Y and speak again");
+                    else SetStatus("You: " + said);
                     break;
                 case "agent_response":
                     var reply = (string)j["agent_response_event"]?["agent_response"];
@@ -324,10 +360,12 @@ namespace VRComposer.Voice
                     if (tool != "get_score") SetStatus(res.error ? "Composer is fixing: " + res.text : res.text);
                     break;
                 case "_error":
+                    awaitingHeard = false;
                     if (!closingOnPurpose) SetStatus("Composer offline: " + (string)j["message"]);
                     break;
                 case "_closed":
-                    if (!closingOnPurpose) SetStatus("Composer disconnected (hold Y to reconnect)");
+                    awaitingHeard = false;
+                    if (!closingOnPurpose) SetStatus("Composer disconnected" + (string.IsNullOrEmpty((string)j["message"]) ? "" : " (" + (string)j["message"] + ")") + ", hold Y to reconnect");
                     break;
             }
         }

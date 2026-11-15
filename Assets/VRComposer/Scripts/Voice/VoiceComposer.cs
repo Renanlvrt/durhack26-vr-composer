@@ -228,7 +228,11 @@ namespace VRComposer.Voice
 
         private void Update()
         {
-            if (talkHeld && !Agent.Talking && Time.unscaledTime - talkPressedAt >= talkHoldSeconds && state == State.Idle) Agent.PushToTalk(true);
+            if (talkHeld && !Agent.Talking && Time.unscaledTime - talkPressedAt >= talkHoldSeconds)
+            {
+                if (state == State.Idle) Agent.PushToTalk(true);
+                else if (state == State.Waiting || state == State.Recording) { talkHeld = false; SetStatus("A singing take is running: press Stop first, then hold Y to talk"); }
+            }
             // start a take asked for by the agent once its reply has played (or 5 s without any reply)
             if (pendingAgentSing && state == State.Idle)
             {
