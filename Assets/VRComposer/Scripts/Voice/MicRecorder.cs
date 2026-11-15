@@ -15,14 +15,12 @@ namespace VRComposer.Voice
     {
         public const int Rate = 16000;
 
-        [Tooltip("Empty = automatic: the headset mic (Oculus / Quest) if there is one, else the system default. A mic that gives pure silence is skipped by itself.")]
+        [Tooltip("Empty = automatic: the headset mic (Oculus / Quest) if there is one, else the system default. Use the Mic button (or this field) to pick another one.")]
         public string deviceName = "";
 
         /// <summary>The mic in use (null = system default).</summary>
         public string CurrentDevice { get { return device; } }
         public event Action<string> DeviceChanged;
-        private float silentSeconds;
-        private int autoSwitches;
 
         /// <summary>(16 kHz mono samples, absolute index of the first one).</summary>
         public event Action<float[], long> Chunk;
@@ -67,7 +65,6 @@ namespace VRComposer.Voice
             devRate = clip.frequency;
             readPos = 0;
             resamplePos = 0;
-            silentSeconds = 0;
             DeviceChanged?.Invoke(device);
             Debug.Log("[VRComposer] Mic on: " + (device ?? "default") + " at " + devRate + " Hz");
             return true;
@@ -140,16 +137,9 @@ namespace VRComposer.Voice
             foreach (var s in outBuf) e += s * s;
             LevelDb = (float)(10 * Math.Log10(e / outBuf.Length + 1e-12));
 
-            // a muted / wrong device delivers pure digital silence (about -97 dB); a real room is
-            // never below about -75 dB. After 2 s of that, try the next microphone (each one once).
-            if (LevelDb < -88f) silentSeconds += outBuf.Length / (float)Rate; else { silentSeconds = 0; autoSwitches = 0; }
-            if (silentSeconds > 2f && Microphone.devices.Length > 1 && autoSwitches < Microphone.devices.Length - 1)
-            {
-                autoSwitches++;
-                Debug.LogWarning("[VRComposer] Mic '" + (device ?? "default") + "' gives only silence: trying the next one.");
-                NextDevice();
-                return;
-            }
+            // Note: no automatic mic switching. The Quest headset mic outputs digital silence both when
+            // the headset is not active and between phrases (its noise gate), so "silent" does not mean
+            // "wrong mic". The headset mic is preferred at start; the Mic button switches by hand.
             long start = TotalSamples;
             TotalSamples += outBuf.Length;
             Chunk?.Invoke(outBuf, start);

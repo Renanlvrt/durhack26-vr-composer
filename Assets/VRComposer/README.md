@@ -94,8 +94,7 @@ The whole take is one **Undo**.
   note also cancels any mic delay.
 - Sung notes keep the exact pitch you sang (sharps and flats included), in both modes. Low voices are moved by whole octaves into the staff's range (same note names). Only the AI composer's notes snap to the
   pentatonic scale. Use **8ths** for a more forgiving rhythm grid.
-- **Mic**: the headset mic (Quest Link / Air Link) is chosen automatically. A mic that gives pure
-  silence (muted or wrong device) is skipped by itself. Tap **Mic** to cycle through the
+- **Mic**: the headset mic (Quest Link / Air Link) is chosen automatically. Tap **Mic** to cycle through the
   microphones; your choice is remembered.
 - Every take is saved to `persistentDataPath/takes/` as WAV + JSON. **Tools > VR Composer >
   Transcribe WAV Take...** re-runs a saved take and prints the notes.
